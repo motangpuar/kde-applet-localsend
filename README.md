@@ -65,9 +65,9 @@ Two ways in. **Release archive** (what the tray widget ships as):
 
 ```bash
 # every tagged release attaches io.github.localsend.plasmoid-<version>.plasmoid
-kpackagetool6 --type Plasma/Applet --install io.github.localsend.plasmoid-0.1.0.plasmoid
+kpackagetool6 --type Plasma/Applet --install io.github.localsend.plasmoid-0.2.0.plasmoid
 # or, to upgrade an existing install
-kpackagetool6 --type Plasma/Applet --upgrade io.github.localsend.plasmoid-0.1.0.plasmoid
+kpackagetool6 --type Plasma/Applet --upgrade io.github.localsend.plasmoid-0.2.0.plasmoid
 ```
 
 The archive carries the guarded Python backend, so nothing is downloaded at install time; it still

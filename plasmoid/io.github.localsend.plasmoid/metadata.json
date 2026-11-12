@@ -5,7 +5,7 @@
     "Description": "Send and receive files on the local network with the LocalSend protocol",
     "Icon": "io.github.localsend.plasmoid",
     "Authors": [{ "Name": "infidel" }],
-    "Version": "0.1.0",
+    "Version": "0.2.0",
     "License": "MIT",
     "Category": "Network",
     "EnabledByDefault": true
