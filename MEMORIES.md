@@ -13,6 +13,12 @@ footer switches already covered every item). History rebuilt: day-grouped cards 
 size, duration, average rate, clock time, first two file names plus "+N more", and a colour chip plus
 error text for anything that did not complete; the tab header shows totals (sent/received/size/failed).
 
+Shipped: CI run 43258602099 green; `v0.1.0` tag published release with
+`io.github.localsend.plasmoid-0.1.0.plasmoid` (sha256 `b9b11be0…`) + `SHA256SUMS`; installed that
+downloaded asset with `kpackagetool6 --upgrade` and restarted plasmashell — journal clean, daemon up.
+Gotchas found: `--out` must be resolved to an absolute path before zipping (CI passes `dist`), and QML
+forbids assigning `font` plus `font.bold` on the same object (that broke FullRepresentation at load).
+
 Round 11 (2026-11-13): control-plane latency fixed. The daemon inherited fd 9 (the `.manage.lock`
 flock) from `manage.sh`, so every later `ctl` call — each 2 s UI poll and every send — waited out
 `flock -w 15`. Children now run with `9>&-`; `ctl ping` is 0.04 s (was 15.04 s) and sends reach the
