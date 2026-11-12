@@ -85,7 +85,9 @@ DAEMON="$BIN/localsendd"
 CTL="$BIN/localsendctl"
 
 # Accept both compact (`"ok":true`, serde) and spaced (`"ok": true`, python) JSON.
-probe() { "$CTL" state 2>/dev/null | grep -Eq '"ok":[[:space:]]*true'; }
+# fd 9 (the manage flock) is closed for every child: a daemon or a slow ctl that inherits it
+# would hold the lock and stall every later call for the full flock timeout.
+probe() { "$CTL" state 2>/dev/null 9>&- | grep -Eq '"ok":[[:space:]]*true'; }
 
 # Wait for a freshly spawned daemon to answer (cold start includes cert generation).
 wait_up() {
@@ -105,7 +107,7 @@ pid_alive() {
 stop_daemon() {
     pid=$(cat "$PIDFILE" 2>/dev/null || true)
     if probe; then
-        "$CTL" shutdown >/dev/null 2>&1 || true
+        "$CTL" shutdown >/dev/null 2>&1 9>&- || true
         for _ in $(seq 1 30); do
             probe || break
             sleep 0.1
@@ -120,7 +122,9 @@ stop_daemon() {
             sleep 0.1
         done
     fi
+    # com_ name covers current daemons; the pattern catches strays from before it was set.
     pkill -x localsendd >/dev/null 2>&1 || true
+    pkill -f "localsend-applet/bin/localsendd" >/dev/null 2>&1 || true
     rm -f "$PIDFILE"
     printf 'LOCALSEND_STOPPED\n'
 }
@@ -138,6 +142,7 @@ case "$ACTION" in
             exit 64
         fi
         # shellcheck disable=SC2086
+        exec 9>&-
         exec "$CTL" $CTL_ARGS
         ;;
     ensure)
@@ -150,7 +155,7 @@ case "$ACTION" in
                 printf 'manage: package binaries changed, restarting daemon\n'
                 stop_daemon >/dev/null
             else
-                printf 'LOCALSEND_RUNNING %s\n' "$("$CTL" state)"
+                printf 'LOCALSEND_RUNNING %s\n' "$("$CTL" state 9>&-)"
                 exit 0
             fi
         fi
@@ -158,7 +163,7 @@ case "$ACTION" in
         # it holds the flock, so ours would exit immediately. Adopt that one instead of failing.
         if pgrep -x localsendd >/dev/null 2>&1; then
             if wait_up 12; then
-                printf 'LOCALSEND_RUNNING %s\n' "$("$CTL" state)"
+                printf 'LOCALSEND_RUNNING %s\n' "$("$CTL" state 9>&-)"
                 exit 0
             fi
             printf 'manage: no daemon answered, reaping stragglers\n' >>"$LOG"
@@ -166,12 +171,12 @@ case "$ACTION" in
         fi
         mkdir -p "$CACHE"
         printf '=== %s start\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$LOG"
-        setsid "$DAEMON" --idle-exit "$IDLE" >>"$LOG" 2>&1 </dev/null &
+        setsid "$DAEMON" --idle-exit "$IDLE" >>"$LOG" 2>&1 </dev/null 9>&- &
         if ! wait_up 20; then
             printf 'LOCALSEND_FAILED daemon did not answer, see %s\n' "$LOG"
             exit 3
         fi
-        printf 'LOCALSEND_STARTED %s\n' "$("$CTL" state)"
+        printf 'LOCALSEND_STARTED %s\n' "$("$CTL" state 9>&-)"
         exit 0
         ;;
 esac

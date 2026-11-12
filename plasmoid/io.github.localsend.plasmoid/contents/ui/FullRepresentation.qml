@@ -453,17 +453,8 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             text: applet.daemonUp
-                  ? i18n("No devices discovered yet. Scan, make sure the other device runs LocalSend on the same network, or drop files here once one appears.")
+                  ? i18n("No devices discovered yet. Press refresh in the header, make sure the other device runs LocalSend on the same network, or drop files here once one appears.")
                   : i18n("localsendd is not running.")
-        }
-
-        PlasmaComponents3.Button {
-            Layout.alignment: Qt.AlignHCenter
-            visible: applet.page === "devices" && full.orderedPeers.length === 0 && applet.daemonUp
-            enabled: !applet.scanning
-            icon.name: "view-refresh"
-            text: applet.scanning ? i18n("Scanning…") : i18n("Scan for devices")
-            onClicked: applet.scanForPeers()
         }
 
         // ---- history view ----

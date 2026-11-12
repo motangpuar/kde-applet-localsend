@@ -20,9 +20,7 @@ PlasmoidItem {
         }
         return decodeURIComponent(url).replace(/\/+$/, "")
     }
-    readonly property string backendOverride: String(Plasmoid.configuration.backendPath || "")
-    readonly property string managePath: backendOverride.length > 0 ? backendOverride
-                                                                   : backendDir + "/manage.sh"
+    readonly property string managePath: backendDir + "/manage.sh"
     readonly property string ctl: managePath + " ctl"
     // Notifications point straight at the packaged SVG: no icon-theme install needed.
     readonly property string iconPath: {
@@ -213,7 +211,9 @@ PlasmoidItem {
             root.lastError = ""
             return
         }
-        if (root.daemonUp || root.lastError !== reason) {
+        // Only log a real transition: the cold-start window before the first successful poll is
+        // expected and would otherwise spam the journal on every session start.
+        if (root.daemonUp) {
             console.warn("localsend: daemon unreachable:", reason)
         }
         root.daemonUp = false
@@ -491,7 +491,8 @@ PlasmoidItem {
     }
 
     Timer {
-        interval: Math.max(500, Plasmoid.configuration.pollIntervalMs)
+        // 2 s keeps the popup responsive without waking the daemon needlessly.
+        interval: 2000
         running: true
         repeat: true
         triggeredOnStart: true

@@ -133,6 +133,10 @@ bus, plasmoid `io.github.localsend.plasmoid` installed via host `kpackagetool6`.
   Now absolute paths + JSON errors on stdout; recovery loop re-verified with plasmashell's exact PATH.
 
 ## Known Blockers
+- Any process spawned by `manage.sh` must not inherit fd 9: a daemon holding `.manage.lock`
+  serialises every later call for the full `flock -w 15` timeout (fixed in round 11, keep it).
+- Two same-host daemons cannot discover each other (SO_REUSEPORT load-balances multicast to one
+  socket): one daemon per host.
 - Master switch = stop the daemon (no announce, no HTTP, no answers). HTTP-level stealth was tried first
   and dropped as over-engineering. Verified with plasmashell stopped: off -> `pids 0`, no TCP 53317,
   6 s of multicast silence, unit `disabled inactive`; on -> bootstrap `{"ok":true,"state":"started"}`,

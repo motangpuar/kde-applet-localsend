@@ -1199,7 +1199,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def set_process_name(name: str) -> None:
+    """Make `pgrep -x localsendd` work: a python shebang script is `python3` to the kernel."""
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(15, name.encode()[:15], 0, 0, 0)  # PR_SET_NAME
+    except Exception:  # noqa: BLE001 - cosmetic only, never fail a start over it
+        pass
+
 def main(argv: list[str]) -> int:
+    set_process_name("localsendd")
     args = parse_args(argv)
     cfg = load_config()
     overridden = False

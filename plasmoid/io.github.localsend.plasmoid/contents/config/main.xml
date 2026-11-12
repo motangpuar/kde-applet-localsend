@@ -4,15 +4,6 @@
       xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0 http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
   <kcfgfile name=""/>
   <group name="General">
-    <!-- Empty = use the supervisor script bundled in the package (contents/backend/manage.sh). -->
-    <entry name="backendPath" type="String">
-      <default></default>
-    </entry>
-    <entry name="pollIntervalMs" type="Int">
-      <default>2000</default>
-      <min>500</min>
-      <max>10000</max>
-    </entry>
     <entry name="showNotifications" type="Bool">
       <default>true</default>
     </entry>

@@ -89,7 +89,7 @@ Uninstall:
 |---|---|
 | Enable/disable the backend | footer switch **LocalSend enabled** (persists as a marker file) |
 | Send a file | drag files onto the tray icon, or **Send…** and pick files, then tap a device (the popup re-opens after the file picker) |
-| Force a discovery round | ⟳ button in the popup header, or **Scan** in the empty state |
+| Force a discovery round | refresh button in the popup header (`ctl scan`) |
 | Accept an incoming transfer | popup prompt with file list; or star a device and enable auto-accept |
 | Inspect history | *History* tab in the popup, per-transfer byte counts and status |
 | Star / unstar a device | ★ on the device row, or **Trust this device** in the detail view |
