@@ -1,0 +1,4 @@
+# The daemon and CLI are extensionless executables (shebang `#!/usr/bin/env python3`);
+# tell Linguist what they are so the repo language bar is not guesswork.
+python/localsendd linguist-language=Python
+python/localsendctl linguist-language=Python
