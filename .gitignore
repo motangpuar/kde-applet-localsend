@@ -4,3 +4,5 @@ __pycache__/
 # staged by `make backend`; never commit the package payload
 /plasmoid/io.github.localsend.plasmoid/contents/backend/localsendd
 /plasmoid/io.github.localsend.plasmoid/contents/backend/localsendctl
+# release artifacts built by scripts/package.sh
+/build/

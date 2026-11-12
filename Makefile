@@ -4,7 +4,7 @@ PACKAGE  := $(PLASMOID)/contents/backend
 PYTHON   ?= python3
 
 .DEFAULT_GOAL := help
-.PHONY: help test lint backend install uninstall verify run ctl clean
+.PHONY: help test lint backend package ci install uninstall verify run ctl clean
 
 help: ## list targets
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-12s %s\n", $$1, $$2}'
@@ -20,6 +20,11 @@ backend: lint ## stage the backend into the plasmoid package
 	install -m755 python/localsendd $(PACKAGE)/localsendd
 	install -m755 python/localsendctl $(PACKAGE)/localsendctl
 	chmod 755 $(PACKAGE)/manage.sh
+
+package: ## build the distributable .plasmoid archive into build/
+	./scripts/package.sh
+
+ci: lint test package ## exactly what GitHub Actions runs before a release
 
 install: ## stage + install the plasmoid for the current user
 	./scripts/install.sh
@@ -44,3 +49,4 @@ ctl: ## print the live daemon snapshot
 clean: ## drop caches and staged payloads
 	rm -rf python/__pycache__ python/tests/__pycache__
 	rm -f $(PACKAGE)/localsendd $(PACKAGE)/localsendctl
+	rm -rf build

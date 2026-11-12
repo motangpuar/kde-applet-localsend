@@ -61,6 +61,20 @@ Design rules, in priority order:
 
 ## Install
 
+Two ways in. **Release archive** (what the tray widget ships as):
+
+```bash
+# every tagged release attaches io.github.localsend.plasmoid-<version>.plasmoid
+kpackagetool6 --type Plasma/Applet --install io.github.localsend.plasmoid-0.1.0.plasmoid
+# or, to upgrade an existing install
+kpackagetool6 --type Plasma/Applet --upgrade io.github.localsend.plasmoid-0.1.0.plasmoid
+```
+
+The archive carries the guarded Python backend, so nothing is downloaded at install time; it still
+needs `python3` ≥ 3.11 on the machine that runs plasmashell.
+
+**From source** (development):
+
 ```bash
 git clone https://github.com/motangpuar/kde-applet-localsend.git
 cd kde-applet-localsend
@@ -91,7 +105,7 @@ Uninstall:
 | Send a file | drag files onto the tray icon, or **Send…** and pick files, then tap a device (the popup re-opens after the file picker) |
 | Force a discovery round | refresh button in the popup header (`ctl scan`) |
 | Accept an incoming transfer | popup prompt with file list; or star a device and enable auto-accept |
-| Inspect history | *History* tab in the popup, per-transfer byte counts and status |
+| Inspect history | *History* tab: day-grouped cards with peer, size, duration, average rate, file names and a status chip for anything that did not complete |
 | Star / unstar a device | ★ on the device row, or **Trust this device** in the detail view |
 | Clear history | *Clear* in the History tab |
 
@@ -221,11 +235,32 @@ Logs in the shell: `journalctl --user -f | grep localsend` (the widget logs peer
 ## Development
 
 ```bash
-make test      # 9 unittest cases: TLS loopback, prompts, PIN, sender, single instance
+make test      # 11 unittest cases: TLS loopback, prompts, PIN, sender, single instance, persistence
 make lint      # py_compile the backend and tests
 make verify    # tests + package layout
 make backend   # stage python/localsend* into the package
+make package   # build build/io.github.localsend.plasmoid-<version>.plasmoid
+make ci        # lint + test + package: the same gate GitHub Actions runs
 ```
+
+### CI and releases
+
+| Workflow | Trigger | Result |
+|---|---|---|
+| `.github/workflows/ci.yml` | push to `main`, pull request | shell syntax, byte-compile, full unittest suite, archive build, 14-day artifact |
+| `.github/workflows/release.yml` | tag `v*` (or manual dispatch) | re-runs the suite, stamps the tag into `metadata.json`, uploads `.plasmoid` + `SHA256SUMS` |
+
+Both call `scripts/package.sh`, which is also what you run locally — a locally verified archive is
+byte-for-byte the build the workflow produces. Release checklist:
+
+```bash
+make ci                       # must pass locally first
+git tag v0.2.0 && git push origin v0.2.0    # workflow publishes the release
+```
+
+`package.sh` refuses to build when the metadata `Id` does not match the package directory, when the
+version is not `MAJOR.MINOR.PATCH`, when a required file is missing from the archive, when the backend
+payload is not executable inside the zip, or when build noise (`__pycache__`, `*.pyc`) leaks in.
 
 ```
 python/localsendd         daemon: discovery, HTTPS receive/send, control socket, watchdog
