@@ -88,7 +88,8 @@ Uninstall:
 | Action | Where |
 |---|---|
 | Enable/disable the backend | footer switch **LocalSend enabled** (persists as a marker file) |
-| Send a file | drag files onto the tray icon, or **Send…** and pick files, then tap a device |
+| Send a file | drag files onto the tray icon, or **Send…** and pick files, then tap a device (the popup re-opens after the file picker) |
+| Force a discovery round | ⟳ button in the popup header, or **Scan** in the empty state |
 | Accept an incoming transfer | popup prompt with file list; or star a device and enable auto-accept |
 | Inspect history | *History* tab in the popup, per-transfer byte counts and status |
 | Star / unstar a device | ★ on the device row, or **Trust this device** in the detail view |
@@ -106,6 +107,7 @@ Everything the widget does is scriptable. The control plane is JSON-in/JSON-out.
 LS="sh /home/$USER/.local/share/plasma/plasmoids/io.github.localsend.plasmoid/contents/backend/manage.sh"
 $LS ctl state                       # full snapshot: daemon, peers, sessions, prompts, history
 $LS ctl peers                       # discovered devices only
+$LS ctl scan                        # announce now instead of waiting for the 5 s tick
 $LS ctl send <fingerprint> FILE...  # start an outgoing transfer
 $LS ctl respond <prompt-id> accept  # answer an incoming offer (reject/cancel also valid)
 $LS ctl cancel <session-id>         # abort a transfer

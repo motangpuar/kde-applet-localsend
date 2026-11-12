@@ -116,8 +116,12 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
+    """Atomic write: a crash mid-save must not lose favorites or the alias."""
     config_dir().mkdir(parents=True, exist_ok=True)
-    (config_dir() / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
+    target = config_dir() / "config.json"
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2) + "\n")
+    os.replace(tmp, target)
 
 
 # --------------------------------------------------------------------------- TLS identity
@@ -774,12 +778,17 @@ def announce(sock: socket.socket, device: dict, state: AppState, target=None, he
             pass
 
 
+# Control-side handle on the live discovery socket, so `scan` can force an announce
+# round without waiting for the 5 s tick.
+DISCOVERY: dict = {"sock": None, "device": None, "state": None}
+
 def discovery_loop(state: AppState, device: dict) -> None:
     try:
         sock = bind_discovery()
     except OSError as exc:
         print(f"localsendd: discovery disabled: {exc}", file=sys.stderr)
         return
+    DISCOVERY.update(sock=sock, device=device, state=state)
     announce(sock, device, state, hello=True)
     sock.settimeout(1.0)
     last_hello = last_prune = time.time()
@@ -813,6 +822,21 @@ def discovery_loop(state: AppState, device: dict) -> None:
             state.prune_peers()
     announce(sock, device, state, hello=False)
     sock.close()
+    DISCOVERY.update(sock=None, device=None, state=None)
+
+def request_scan(state: AppState) -> dict:
+    """Force a discovery round: drop stale peers, then announce immediately.
+
+    Peers that do not know us answer with their own announcement, which the
+    discovery loop turns into a peer entry.
+    """
+    sock = DISCOVERY.get("sock")
+    if sock is None:
+        state.prune_peers()
+        return {"scanning": False, "peers": len(state.peers), "reason": "discovery disabled"}
+    state.prune_peers()
+    announce(sock, DISCOVERY["device"], state, hello=True)
+    return {"scanning": True, "peers": len(state.peers)}
 
 
 # --------------------------------------------------------------------------- sending
@@ -1020,6 +1044,8 @@ def dispatch(state: AppState, req: dict, cert: CertPair) -> dict:
         enabled = bool(req.get("enabled"))
         state.set_auto_accept(enabled)
         return ok({"autoAcceptFavorites": enabled})
+    if method == "scan":
+        return ok(request_scan(state))
     if method == "shutdown":
         state.shutdown.set()
         return ok({"stopping": True})

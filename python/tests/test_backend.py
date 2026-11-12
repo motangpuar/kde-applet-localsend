@@ -318,6 +318,39 @@ class ReceiveFlowTests(HermeticDirs):
         self.assertEqual(len(self.ctl("state")["peers"]), 0)
 
 
+class SettingsPersistenceTests(HermeticDirs):
+    """Starred devices and the trust checkbox must survive a daemon restart."""
+
+    def test_favorite_and_auto_accept_survive_restart(self):
+        port = free_port()
+        proc = self.start_daemon(port)
+        fingerprint = "a" * 64
+        self.assertTrue(self.ctl("favorite", fingerprint, "on")["ok"])
+        self.assertTrue(self.ctl("auto-accept", "on")["ok"])
+        self.ctl("shutdown")
+        proc.wait(timeout=10)
+
+        self.start_daemon(port)
+        snapshot = self.ctl("state")
+        self.assertEqual(snapshot["favorites"], [fingerprint])
+        self.assertTrue(snapshot["autoAcceptFavorites"])
+
+        self.ctl("favorite", fingerprint, "off")
+        self.ctl("auto-accept", "off")
+        self.ctl("shutdown")
+        self.procs[-1].wait(timeout=10)
+        self.start_daemon(port)
+        snapshot = self.ctl("state")
+        self.assertEqual(snapshot["favorites"], [])
+        self.assertFalse(snapshot["autoAcceptFavorites"])
+
+    def test_scan_answers_when_discovery_is_off(self):
+        self.start_daemon(free_port())
+        result = self.ctl("scan")
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["scanning"])
+        self.assertIn("peers", result)
+
 class FakeReceiver(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True

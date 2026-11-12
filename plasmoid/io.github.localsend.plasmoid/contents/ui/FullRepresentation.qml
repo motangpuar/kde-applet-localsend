@@ -1,3 +1,4 @@
+import QtQml
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -116,6 +117,25 @@ Item {
             }
 
             PlasmaComponents3.ToolButton {
+                icon.name: "view-refresh"
+                enabled: !applet.scanning
+                onClicked: applet.scanForPeers()
+                PlasmaComponents3.ToolTip.text: applet.networkEnabled
+                    ? i18n("Scan for devices now")
+                    : i18n("Start the background service and scan")
+                PlasmaComponents3.ToolTip.visible: hovered
+                PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
+
+                PlasmaComponents3.BusyIndicator {
+                    anchors.centerIn: parent
+                    implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                    implicitHeight: implicitWidth
+                    running: applet.scanning
+                    visible: applet.scanning
+                }
+            }
+
+            PlasmaComponents3.ToolButton {
                 icon.name: "folder-open"
                 visible: applet.daemonUp
                 onClicked: applet.openDownloadDir()
@@ -162,24 +182,32 @@ Item {
                     }
                     PlasmaComponents3.MenuSeparator {}
                     PlasmaComponents3.MenuItem {
+                        id: enabledItem
                         text: i18n("LocalSend enabled")
                         icon.name: "network-wireless"
                         checkable: true
-                        checked: applet.networkEnabled
-                        onTriggered: {
-                            applet.setNetworkEnabled(!applet.networkEnabled)
-                            checked = Qt.binding(() => applet.networkEnabled)
+                        onTriggered: applet.setNetworkEnabled(!applet.networkEnabled)
+                        // A click kills a plain `checked:` binding; the Binding element survives it
+                        // and re-applies whenever the daemon-backed state changes.
+                        Binding {
+                            target: enabledItem
+                            property: "checked"
+                            value: applet.networkEnabled
+                            restoreMode: Binding.RestoreNone
                         }
                     }
                     PlasmaComponents3.MenuItem {
+                        id: autoAcceptItem
                         text: i18n("Auto-accept trusted devices")
                         icon.name: "emblem-favorite"
                         checkable: true
-                        checked: applet.autoAccept
                         enabled: (applet.favorites || []).length > 0
-                        onTriggered: {
-                            applet.setAutoAccept(!applet.autoAccept)
-                            checked = Qt.binding(() => applet.autoAccept)
+                        onTriggered: applet.setAutoAccept(!applet.autoAccept)
+                        Binding {
+                            target: autoAcceptItem
+                            property: "checked"
+                            value: applet.autoAccept
+                            restoreMode: Binding.RestoreNone
                         }
                     }
                     PlasmaComponents3.MenuItem {
@@ -425,8 +453,17 @@ Item {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             text: applet.daemonUp
-                  ? i18n("No devices discovered yet. Make sure the other device runs LocalSend on the same network, or drop files here once one appears.")
+                  ? i18n("No devices discovered yet. Scan, make sure the other device runs LocalSend on the same network, or drop files here once one appears.")
                   : i18n("localsendd is not running.")
+        }
+
+        PlasmaComponents3.Button {
+            Layout.alignment: Qt.AlignHCenter
+            visible: applet.page === "devices" && full.orderedPeers.length === 0 && applet.daemonUp
+            enabled: !applet.scanning
+            icon.name: "view-refresh"
+            text: applet.scanning ? i18n("Scanning…") : i18n("Scan for devices")
+            onClicked: applet.scanForPeers()
         }
 
         // ---- history view ----
@@ -492,14 +529,19 @@ Item {
             spacing: Kirigami.Units.smallSpacing
 
             PlasmaComponents3.Switch {
+                id: enabledSwitch
                 Layout.fillWidth: true
                 text: i18n("LocalSend enabled")
-                checked: applet.networkEnabled
                 onToggled: {
                     if (checked !== applet.networkEnabled) {
                         applet.setNetworkEnabled(checked)
                     }
-                    checked = Qt.binding(() => applet.networkEnabled)
+                }
+                Binding {
+                    target: enabledSwitch
+                    property: "checked"
+                    value: applet.networkEnabled
+                    restoreMode: Binding.RestoreNone
                 }
                 PlasmaComponents3.ToolTip.text: applet.networkEnabled
                     ? i18n("The background service runs: devices can discover and send to you")
@@ -514,14 +556,19 @@ Item {
                 visible: applet.daemonUp
 
                 PlasmaComponents3.Switch {
+                    id: autoAcceptSwitch
                     text: i18n("Auto-accept trusted devices")
                     enabled: (applet.favorites || []).length > 0
-                    checked: applet.autoAccept
                     onToggled: {
                         if (checked !== applet.autoAccept) {
                             applet.setAutoAccept(checked)
                         }
-                        checked = Qt.binding(() => applet.autoAccept)
+                    }
+                    Binding {
+                        target: autoAcceptSwitch
+                        property: "checked"
+                        value: applet.autoAccept
+                        restoreMode: Binding.RestoreNone
                     }
                     PlasmaComponents3.ToolTip.text: (applet.favorites || []).length > 0
                         ? i18n("Transfers from starred devices start without asking")

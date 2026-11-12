@@ -53,6 +53,8 @@ PlasmoidItem {
     property var announcedPrompts: ({})
     property var announcedSessions: ({})
     property string pendingPeer: ""
+    /// True while a manual re-scan is in flight, so the header button can show a spinner.
+    property bool scanning: false
     /// Popup view: "devices" | "history".
     property string page: "devices"
 
@@ -389,6 +391,28 @@ PlasmoidItem {
         fileDialog.open()
     }
 
+    /// Opening a native file dialog deactivates the popup, so Plasma hides it. Re-open it once
+    /// the dialog is gone: the user is still mid-task (pick files, then watch the transfer).
+    function reopenPopup() {
+        reopenTimer.restart()
+    }
+
+    /// Manual discovery round: the daemon announces right away instead of waiting for its tick.
+    function scanForPeers() {
+        if (!root.networkEnabled) {
+            root.startDaemon()
+            return
+        }
+        root.scanning = true
+        runCtl(["scan"], () => {
+            root.refresh()
+            scanSettleTimer.restart()
+        }, () => {
+            root.scanning = false
+            root.refresh()
+        })
+    }
+
     function sendPaths(fingerprint, urls) {
         const args = ["send", q(fingerprint)]
         for (let i = 0; i < urls.length; ++i) {
@@ -421,8 +445,29 @@ PlasmoidItem {
         onAccepted: {
             root.sendPaths(root.pendingPeer, fileDialog.selectedFiles)
             root.pendingPeer = ""
+            root.reopenPopup()
         }
-        onRejected: root.pendingPeer = ""
+        onRejected: {
+            root.pendingPeer = ""
+            root.reopenPopup()
+        }
+    }
+
+    // Plasma hides the popup while the file dialog is up; asking again a beat later is enough.
+    Timer {
+        id: reopenTimer
+        interval: 120
+        onTriggered: root.expanded = true
+    }
+
+    /// Peers answer an announcement within a few hundred ms; poll once after that window.
+    Timer {
+        id: scanSettleTimer
+        interval: 900
+        onTriggered: {
+            root.scanning = false
+            root.refresh()
+        }
     }
 
     function formatBytes(bytes) {

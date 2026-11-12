@@ -1,6 +1,18 @@
 # MEMORIES
 
 ## Current Status
+Feature round 10 (2026-11-12): manual scan, popup survives the file picker, and every toggle now
+mirrors daemon state instead of a one-shot QML binding. `localsendd` gained a `scan` control method
+(immediate announce + stale-peer prune, `DISCOVERY` registry holds the live socket) plus atomic
+`config.json` writes; `localsendctl scan`; popup header ⟳ button with busy indicator and a
+**Scan for devices** button in the empty state; `FileDialog.onAccepted/onRejected` re-expand the
+popup after 120 ms. Checkboxes/switches replaced `checked = Qt.binding()` re-arms with `Binding`
+elements (`restoreMode: Binding.RestoreNone`) so favorites and auto-accept render daemon truth after
+any click. Suite now 11 cases (persistence across restart, scan with discovery off).
+Verified live: `ctl scan` → `{"ok":true,"scanning":true,"peers":1}`, `Hot Mushroom` found;
+favorites/auto-accept survive `manage.sh restart` (config `favorites` + `auto_accept_favorites`).
+
+## Previous Status
 Feature round 9 (2026-11-12): the repository is Python-only. The daemon is `python/localsendd`, the CLI
 `python/localsendctl`, the suite `python/tests/test_backend.py` (9 cases green); Rust tree, Cargo files
 and `target/` are gone. Makefile: `help|test|lint|backend|verify|install|uninstall|run|ctl|clean`.
