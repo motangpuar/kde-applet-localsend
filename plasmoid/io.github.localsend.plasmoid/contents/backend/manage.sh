@@ -84,7 +84,7 @@ stage localsendctl
 DAEMON="$BIN/localsendd"
 CTL="$BIN/localsendctl"
 
-# Accept both compact (`"ok":true`, serde) and spaced (`"ok": true`, python) JSON.
+# Accept both compact (`"ok":true`) and spaced (`"ok": true`) JSON: ctl output must stay grep-able.
 # fd 9 (the manage flock) is closed for every child: a daemon or a slow ctl that inherits it
 # would hold the lock and stall every later call for the full flock timeout.
 probe() { "$CTL" state 2>/dev/null 9>&- | grep -Eq '"ok":[[:space:]]*true'; }
