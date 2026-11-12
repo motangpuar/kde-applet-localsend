@@ -50,6 +50,82 @@ Item {
         return Kirigami.Theme.disabledTextColor
     }
 
+    /// Readable words instead of the daemon's wire statuses.
+    function statusText(status) {
+        switch (status) {
+        case "done": return i18n("Completed")
+        case "error": return i18n("Failed")
+        case "declined": return i18n("Declined")
+        case "cancelled": return i18n("Cancelled")
+        case "timed out": return i18n("Timed out")
+        default: return status ? String(status) : i18n("Unknown")
+        }
+    }
+
+    function filesLabel(count) {
+        return count === 1 ? i18n("1 file") : i18n("%1 files", count)
+    }
+
+    /// "3 files · 29.8 MiB · 2.1 s · 14.2 MiB/s · 00:20" — everything the entry knows.
+    function historyMeta(entry, fileCount, duration) {
+        const parts = [full.filesLabel(fileCount), applet.formatBytes(entry.bytes || 0)]
+        if (duration > 0) {
+            parts.push(applet.formatDuration(duration))
+            const rate = applet.formatRate((Number(entry.bytes) || 0) / (duration / 1000))
+            if (rate.length > 0) {
+                parts.push(rate)
+            }
+        }
+        parts.push(applet.formatClock(entry.finishedMs || entry.startedMs))
+        return parts.join(" · ")
+    }
+
+    /// First two file names, then "+N more": long albums stay on one line.
+    function fileListLabel(files) {
+        const names = (files || []).map(f => (f && f.name) ? String(f.name) : "").filter(n => n.length > 0)
+        if (names.length === 0) {
+            return ""
+        }
+        const shown = names.slice(0, 2).join(", ")
+        return names.length > 2 ? i18n("%1 +%2 more", shown, names.length - 2) : shown
+    }
+
+    readonly property var historyRows: applet.history || []
+
+    /// Totals for the History tab header, recomputed only when the daemon snapshot changes.
+    readonly property var historySummary: {
+        const rows = full.historyRows
+        let sent = 0
+        let received = 0
+        let failed = 0
+        let bytes = 0
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i] || {}
+            if (row.direction === "send") {
+                sent += 1
+            } else {
+                received += 1
+            }
+            if (row.status !== "done") {
+                failed += 1
+            }
+            bytes += Number(row.bytes) || 0
+        }
+        return { "sent": sent, "received": received, "failed": failed,
+                 "bytes": bytes, "total": rows.length }
+    }
+
+    function historySummaryLine() {
+        const stats = full.historySummary
+        const parts = [i18n("%1 sent", stats.sent),
+                       i18n("%1 received", stats.received),
+                       applet.formatBytes(stats.bytes)]
+        if (stats.failed > 0) {
+            parts.push(i18n("%1 not completed", stats.failed))
+        }
+        return parts.join(" · ")
+    }
+
     DropArea {
         anchors.fill: parent
         onDropped: (drop) => {
@@ -142,81 +218,6 @@ Item {
                 PlasmaComponents3.ToolTip.text: i18n("Open download folder")
                 PlasmaComponents3.ToolTip.visible: hovered
                 PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
-            }
-
-            // Menu: history + the settings that only exist daemon-side.
-            PlasmaComponents3.ToolButton {
-                id: menuButton
-                icon.name: "application-menu"
-                checkable: true
-                onClicked: appletMenu.popup()
-
-                PlasmaComponents3.Menu {
-                    id: appletMenu
-                    parent: menuButton
-                    y: menuButton.height
-                    PlasmaComponents3.MenuItem {
-                        text: i18n("Transfer history…")
-                        icon.name: "view-history"
-                        onTriggered: applet.page = "history"
-                    }
-                    PlasmaComponents3.MenuItem {
-                        text: i18n("Send files…")
-                        icon.name: "document-send"
-                        enabled: applet.daemonUp && full.orderedPeers.length > 0
-                        onTriggered: applet.sendTo(full.dropTarget())
-                    }
-                    PlasmaComponents3.MenuItem {
-                        text: applet.isFavorite(full.selectedPeer)
-                              ? i18n("Stop trusting this device")
-                              : i18n("Trust this device (skip the prompt)")
-                        icon.name: applet.isFavorite(full.selectedPeer) ? "rating" : "rating-unrated"
-                        enabled: full.hasSelection
-                        onTriggered: applet.toggleFavorite(full.selectedPeer)
-                    }
-                    PlasmaComponents3.MenuItem {
-                        text: i18n("Open download folder")
-                        icon.name: "folder-open"
-                        enabled: applet.daemonUp
-                        onTriggered: applet.openDownloadDir()
-                    }
-                    PlasmaComponents3.MenuSeparator {}
-                    PlasmaComponents3.MenuItem {
-                        id: enabledItem
-                        text: i18n("LocalSend enabled")
-                        icon.name: "network-wireless"
-                        checkable: true
-                        onTriggered: applet.setNetworkEnabled(!applet.networkEnabled)
-                        // A click kills a plain `checked:` binding; the Binding element survives it
-                        // and re-applies whenever the daemon-backed state changes.
-                        Binding {
-                            target: enabledItem
-                            property: "checked"
-                            value: applet.networkEnabled
-                            restoreMode: Binding.RestoreNone
-                        }
-                    }
-                    PlasmaComponents3.MenuItem {
-                        id: autoAcceptItem
-                        text: i18n("Auto-accept trusted devices")
-                        icon.name: "emblem-favorite"
-                        checkable: true
-                        enabled: (applet.favorites || []).length > 0
-                        onTriggered: applet.setAutoAccept(!applet.autoAccept)
-                        Binding {
-                            target: autoAcceptItem
-                            property: "checked"
-                            value: applet.autoAccept
-                            restoreMode: Binding.RestoreNone
-                        }
-                    }
-                    PlasmaComponents3.MenuItem {
-                        text: i18n("Clear history")
-                        icon.name: "edit-clear-history"
-                        enabled: (applet.history || []).length > 0
-                        onTriggered: applet.clearHistory()
-                    }
-                }
             }
         }
 
@@ -339,7 +340,7 @@ Item {
                 currentIndex: applet.page === "history" ? 1 : 0
                 onCurrentIndexChanged: {
                     applet.page = currentIndex === 1 ? "history" : "devices"
-                    // Clicking breaks the binding; restore it so the menu can still steer the tabs.
+                    // Clicking breaks the binding; restore it so programmatic page switches steer the tabs.
                     currentIndex = Qt.binding(() => applet.page === "history" ? 1 : 0)
                 }
                 PlasmaComponents3.TabButton {
@@ -355,10 +356,10 @@ Item {
             }
             Item { Layout.fillWidth: true }
             PlasmaComponents3.Label {
-                visible: applet.page === "history"
-                opacity: 0.7
+                visible: applet.page === "history" && full.historySummary.total > 0
+                opacity: 0.75
                 font: Kirigami.Theme.smallFont
-                text: i18n("%1 entr(ies)", (applet.history || []).length)
+                text: full.historySummaryLine()
             }
             PlasmaComponents3.ToolButton {
                 icon.name: "edit-clear-history"
@@ -457,7 +458,7 @@ Item {
                   : i18n("localsendd is not running.")
         }
 
-        // ---- history view ----
+        // ---- history view: one card per transfer, grouped by day ----
         ListView {
             id: historyList
             Layout.fillWidth: true
@@ -466,38 +467,132 @@ Item {
             Layout.minimumHeight: Kirigami.Units.gridUnit * 4
             visible: applet.page === "history"
             clip: true
-            model: applet.history || []
-            spacing: 2
+            model: full.historyRows
+            spacing: 0
+            boundsBehavior: Flickable.StopAtBounds
 
-            delegate: RowLayout {
+            delegate: ColumnLayout {
+                id: historyRow
                 required property var modelData
+                required property int index
+
+                readonly property real stamp: Number(modelData.finishedMs || modelData.startedMs || 0)
+                readonly property var previousEntry: index > 0 ? (full.historyRows[index - 1] || null) : null
+                readonly property bool startsDay: !previousEntry
+                    || full.dayKey(Number(previousEntry.finishedMs || previousEntry.startedMs || 0))
+                       !== full.dayKey(stamp)
+                readonly property int fileCount: (modelData.files || []).length
+                readonly property real duration:
+                    Math.max(0, Number(modelData.finishedMs || 0) - Number(modelData.startedMs || 0))
+                readonly property bool failed: modelData.status !== "done"
+
                 width: historyList.width
                 spacing: Kirigami.Units.smallSpacing
 
-                Kirigami.Icon {
-                    source: modelData.direction === "send" ? "document-send" : "document-save"
-                    implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                    implicitHeight: implicitWidth
-                }
-                ColumnLayout {
+                PlasmaComponents3.Label {
+                    visible: historyRow.startsDay
                     Layout.fillWidth: true
-                    spacing: 0
-                    PlasmaComponents3.Label {
-                        Layout.fillWidth: true
-                        elide: Text.ElideRight
-                        text: (modelData.direction === "send" ? i18n("To %1", modelData.peer)
-                                                              : i18n("From %1", modelData.peer))
-                              + " · " + i18n("%1 file(s) · %2", (modelData.files || []).length,
-                                             applet.formatBytes(modelData.bytes || 0))
-                    }
-                    PlasmaComponents3.Label {
-                        Layout.fillWidth: true
-                        elide: Text.ElideRight
-                        opacity: 0.7
-                        font: Kirigami.Theme.smallFont
-                        text: applet.formatWhen(modelData.finishedMs) + " · " + modelData.status
-                              + (modelData.error ? " · " + modelData.error : "")
-                        color: full.statusColor(modelData.status)
+                    Layout.topMargin: historyRow.index === 0 ? 0 : Kirigami.Units.smallSpacing
+                    Layout.bottomMargin: Kirigami.Units.smallSpacing
+                    text: applet.dayLabel(historyRow.stamp)
+                    font: Kirigami.Theme.smallFont
+                    font.bold: true
+                    opacity: 0.75
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: historyCard.implicitHeight + Kirigami.Units.smallSpacing * 2
+                    radius: Kirigami.Units.smallSpacing
+                    color: historyRow.failed
+                           ? Qt.rgba(Kirigami.Theme.negativeTextColor.r,
+                                     Kirigami.Theme.negativeTextColor.g,
+                                     Kirigami.Theme.negativeTextColor.b, 0.08)
+                           : Kirigami.Theme.alternateBackgroundColor
+
+                    RowLayout {
+                        id: historyCard
+                        anchors.fill: parent
+                        anchors.margins: Kirigami.Units.smallSpacing
+                        spacing: Kirigami.Units.smallSpacing
+
+                        Kirigami.Icon {
+                            Layout.alignment: Qt.AlignTop
+                            implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                            implicitHeight: implicitWidth
+                            source: historyRow.modelData.direction === "send" ? "document-send"
+                                                                             : "document-save"
+                            color: full.statusColor(historyRow.modelData.status)
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Kirigami.Units.smallSpacing
+
+                                PlasmaComponents3.Label {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
+                                    font.bold: true
+                                    text: historyRow.modelData.direction === "send"
+                                          ? i18n("Sent to %1", historyRow.modelData.peer || i18n("unknown device"))
+                                          : i18n("Received from %1", historyRow.modelData.peer || i18n("unknown device"))
+                                }
+
+                                Rectangle {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    visible: historyRow.failed
+                                    implicitWidth: historyChipLabel.implicitWidth + Kirigami.Units.smallSpacing * 2
+                                    implicitHeight: historyChipLabel.implicitHeight + Kirigami.Units.smallSpacing
+                                    radius: height / 2
+                                    color: Qt.rgba(full.statusColor(historyRow.modelData.status).r,
+                                                   full.statusColor(historyRow.modelData.status).g,
+                                                   full.statusColor(historyRow.modelData.status).b, 0.18)
+
+                                    PlasmaComponents3.Label {
+                                        id: historyChipLabel
+                                        anchors.centerIn: parent
+                                        text: full.statusText(historyRow.modelData.status)
+                                        color: full.statusColor(historyRow.modelData.status)
+                                        font: Kirigami.Theme.smallFont
+                                        font.bold: true
+                                    }
+                                }
+                            }
+
+                            PlasmaComponents3.Label {
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                opacity: 0.8
+                                font: Kirigami.Theme.smallFont
+                                text: full.historyMeta(historyRow.modelData, historyRow.fileCount,
+                                                       historyRow.duration)
+                            }
+
+                            PlasmaComponents3.Label {
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+                                text: full.fileListLabel(historyRow.modelData.files)
+                                elide: Text.ElideMiddle
+                                opacity: 0.7
+                                font: Kirigami.Theme.smallFont
+                            }
+
+                            PlasmaComponents3.Label {
+                                Layout.fillWidth: true
+                                visible: historyRow.failed
+                                         && String(historyRow.modelData.error || "").length > 0
+                                text: historyRow.modelData.error || ""
+                                color: Kirigami.Theme.negativeTextColor
+                                font: Kirigami.Theme.smallFont
+                                wrapMode: Text.WordWrap
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                            }
+                        }
                     }
                 }
             }

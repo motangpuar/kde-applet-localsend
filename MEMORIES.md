@@ -3,6 +3,16 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+Round 12 (2026-11-13): release engineering and history UX. `scripts/package.sh` is the only packaging
+path — stages the backend, stamps the version, builds `build/<id>-<version>.plasmoid`, then verifies
+metadata id/version, required files, safe paths, executable bits and absence of `__pycache__`. CI runs
+on every push/PR (shell syntax, byte-compile, 11 tests, archive artifact); `release.yml` on `v*` tags
+re-runs the suite, refuses tags not on `main`, stamps the tag as the version and publishes the archive
+with `SHA256SUMS`. The header overflow menu is gone (history tab, per-device send, ★, folder button and
+footer switches already covered every item). History rebuilt: day-grouped cards with peer, file count,
+size, duration, average rate, clock time, first two file names plus "+N more", and a colour chip plus
+error text for anything that did not complete; the tab header shows totals (sent/received/size/failed).
+
 Round 11 (2026-11-13): control-plane latency fixed. The daemon inherited fd 9 (the `.manage.lock`
 flock) from `manage.sh`, so every later `ctl` call — each 2 s UI poll and every send — waited out
 `flock -w 15`. Children now run with `9>&-`; `ctl ping` is 0.04 s (was 15.04 s) and sends reach the

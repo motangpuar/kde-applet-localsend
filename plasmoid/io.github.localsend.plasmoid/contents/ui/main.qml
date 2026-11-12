@@ -490,6 +490,40 @@ PlasmoidItem {
         return Qt.formatDateTime(new Date(stamp), "yyyy-MM-dd HH:mm")
     }
 
+    /// "0.8 s" / "12 s" / "3 m 20 s": transfer duration, not a wall clock.
+    function formatDuration(ms) {
+        const total = Math.max(0, Math.round(Number(ms) || 0))
+        if (total < 1000) return i18n("%1 ms", total)
+        const seconds = total / 1000
+        if (seconds < 60) return i18n("%1 s", seconds < 10 ? seconds.toFixed(1) : Math.round(seconds))
+        const minutes = Math.floor(seconds / 60)
+        const rest = Math.round(seconds - minutes * 60)
+        return i18n("%1 m %2 s", minutes, rest)
+    }
+
+    function formatClock(ms) {
+        const stamp = Number(ms) || 0
+        if (stamp <= 0) return ""
+        return Qt.formatDateTime(new Date(stamp), "HH:mm")
+    }
+
+    /// History grouping: one key per calendar day, in the user's own timezone.
+    function dayKey(ms) {
+        const stamp = Number(ms) || 0
+        if (stamp <= 0) return ""
+        return Qt.formatDateTime(new Date(stamp), "yyyy-MM-dd")
+    }
+
+    function dayLabel(ms) {
+        const stamp = Number(ms) || 0
+        if (stamp <= 0) return i18n("Unknown date")
+        const key = root.dayKey(stamp)
+        const now = new Date()
+        if (key === root.dayKey(now.getTime())) return i18n("Today")
+        if (key === root.dayKey(now.getTime() - 24 * 60 * 60 * 1000)) return i18n("Yesterday")
+        return Qt.formatDateTime(new Date(stamp), "ddd d MMM yyyy")
+    }
+
     Timer {
         // 2 s keeps the popup responsive without waking the daemon needlessly.
         interval: 2000
