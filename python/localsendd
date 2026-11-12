@@ -1,0 +1,1277 @@
+#!/usr/bin/env python3
+"""localsendd - LocalSend v2 backend for the KDE Plasma applet (Python port).
+
+Owns multicast discovery, the HTTPS receive server and sending; the plasmoid only talks to the
+newline-delimited JSON control socket in $XDG_RUNTIME_DIR/localsend-applet/control.sock, so this
+daemon needs neither D-Bus nor systemd. Wire protocol: https://github.com/localsend/protocol (v2.2).
+"""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import hashlib
+import http.client
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import ssl
+import struct
+import sys
+import threading
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+APP_VERSION = "0.2.0"
+PROTOCOL_VERSION = "2.2"
+MULTICAST_ADDR = "224.0.0.167"
+DISCOVERY_PORT = 53317
+DEFAULT_PORT = 53317
+PEER_TTL = 60.0
+PROMPT_TIMEOUT = 300.0
+PROGRESS_STEP = 512 * 1024
+HISTORY_MAX = 200
+
+PATH_INFO = "/api/localsend/v2/info"
+PATH_REGISTER = "/api/localsend/v2/register"
+PATH_PREPARE = "/api/localsend/v2/prepare-upload"
+PATH_UPLOAD = "/api/localsend/v2/upload"
+PATH_CANCEL = "/api/localsend/v2/cancel"
+
+TERMINAL = ("done", "error", "declined", "cancelled", "timed out")
+
+
+# --------------------------------------------------------------------------- paths / config
+def hostname() -> str:
+    try:
+        return Path("/proc/sys/kernel/hostname").read_text().strip() or "localsend"
+    except OSError:
+        return "localsend"
+
+
+def config_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "localsendd"
+
+
+def runtime_dir() -> Path:
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if base:
+        return Path(base) / "localsend-applet"
+    cache = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(cache) / "localsend-applet" / "run"
+
+
+def socket_path() -> Path:
+    return runtime_dir() / "control.sock"
+
+
+def pid_path() -> Path:
+    return runtime_dir() / "daemon.pid"
+
+
+def lock_path() -> Path:
+    return runtime_dir() / "daemon.lock"
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def default_config() -> dict:
+    user = os.environ.get("USER")
+    alias = f"{user}@{hostname()}" if user else hostname()
+    return {
+        "alias": alias,
+        "port": DEFAULT_PORT,
+        "download_dir": str(Path.home() / "Downloads" / "LocalSend"),
+        "pin": None,
+        "fingerprint": "",
+        "favorites": [],
+        "auto_accept_favorites": False,
+    }
+
+
+def load_config() -> dict:
+    cfg = default_config()
+    path = config_dir() / "config.json"
+    try:
+        raw = json.loads(path.read_text())
+        if isinstance(raw, dict):
+            cfg.update({k: v for k, v in raw.items() if k in cfg})
+    except (OSError, json.JSONDecodeError):
+        pass
+    config_dir().mkdir(parents=True, exist_ok=True)
+    Path(cfg["download_dir"]).mkdir(parents=True, exist_ok=True)
+    save_config(cfg)
+    return cfg
+
+
+def save_config(cfg: dict) -> None:
+    config_dir().mkdir(parents=True, exist_ok=True)
+    (config_dir() / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
+
+
+# --------------------------------------------------------------------------- TLS identity
+def _fingerprint_der(der: bytes) -> str:
+    return hashlib.sha256(der).hexdigest()
+
+
+def _pem_to_der(pem: str) -> bytes:
+    import base64
+
+    body = "".join(line for line in pem.splitlines() if not line.startswith("-----"))
+    try:
+        return base64.b64decode(body)
+    except Exception:
+        return b""
+
+
+def _generate_cert(cert_path: Path, key_path: Path) -> None:
+    """Self-signed cert for the LocalSend fingerprint. cryptography is the normal path; openssl
+    is the fallback so a host without the module still works."""
+    names = ["localhost", hostname(), "localsendd"]
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localsendd")])
+        san = x509.SubjectAlternativeName([x509.DNSName(n) for n in names])
+        now = datetime.now(timezone.utc)
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=3650))
+            .add_extension(san, critical=False)
+            .sign(key, hashes.SHA256())
+        )
+        key_path.write_bytes(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        return
+    except ImportError:
+        pass
+
+    san = ",".join(f"DNS:{n}" for n in names)
+    os.system(
+        "openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 "
+        f"-subj /CN=localsendd -addext subjectAltName={san} "
+        f"-keyout {key_path} -out {cert_path} >/dev/null 2>&1"
+    )
+
+
+class CertPair:
+    def __init__(self, cert_path: Path, key_path: Path, fingerprint: str):
+        self.cert_path = cert_path
+        self.key_path = key_path
+        self.fingerprint = fingerprint
+
+
+def ensure_cert() -> CertPair:
+    """Reuse the pair the daemon (or the Rust build) already made; the fingerprint is the identity
+    peers pin, so it must never churn."""
+    directory = config_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    cert_path = directory / "cert.pem"
+    key_path = directory / "key.pem"
+    if not (cert_path.exists() and key_path.exists()):
+        _generate_cert(cert_path, key_path)
+    cert_pem = cert_path.read_text()
+    try:
+        os.chmod(key_path, 0o600)
+    except OSError:
+        pass
+    return CertPair(cert_path, key_path, _fingerprint_der(_pem_to_der(cert_pem)))
+
+
+# --------------------------------------------------------------------------- protocol helpers
+def sanitize_file_name(raw: str) -> str:
+    # Drop any directory component first: a peer must never pick where the file lands.
+    base = raw.replace("\\", "/").rsplit("/", 1)[-1]
+    cleaned = "".join("_" if (ord(c) < 32 or c == ":") else c for c in base)
+    trimmed = cleaned.strip(".").strip()
+    return trimmed or "file"
+
+
+def mime_for(path: Path) -> str:
+    import mimetypes
+
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
+def unique_path(directory: Path, name: str) -> Path:
+    name = sanitize_file_name(name)
+    candidate = directory / name
+    if not candidate.exists():
+        return candidate
+    stem = Path(name).stem or "file"
+    suffix = Path(name).suffix
+    for i in range(1, 10_000):
+        alt = directory / (f"{stem} ({i}){suffix}")
+        if not alt.exists():
+            return alt
+    return directory / f"{stem}-{uuid.uuid4()}"
+
+
+# --------------------------------------------------------------------------- state
+class Prompt:
+    def __init__(self, session_id: str, peer_alias: str, peer_ip: str, files: list[dict]):
+        self.id = str(uuid.uuid4())
+        self.session_id = session_id
+        self.peer_alias = peer_alias
+        self.peer_ip = peer_ip
+        self.file_count = len(files)
+        self.bytes_total = sum(f["size"] for f in files)
+        self.file_names = [f["name"] for f in files][:12]
+        self.created_ms = now_ms()
+        self.event = threading.Event()
+        self.accepted = False
+
+    def as_json(self) -> dict:
+        return {
+            "id": self.id,
+            "peerAlias": self.peer_alias,
+            "peerIp": self.peer_ip,
+            "fileCount": self.file_count,
+            "bytesTotal": self.bytes_total,
+            "fileNames": self.file_names,
+            "createdMs": self.created_ms,
+        }
+
+
+class Session:
+    def __init__(self, direction: str, peer: str):
+        self.id = str(uuid.uuid4())
+        self.direction = direction
+        self.peer = peer
+        self.status = "negotiating"
+        self.error: str | None = None
+        self.files: list[dict] = []
+        self.bytes_total = 0
+        self.bytes_done = 0
+        self.started_ms = now_ms()
+        self.tokens: dict[str, str] = {}
+
+    def recompute(self) -> None:
+        self.bytes_done = sum(f["bytes"] for f in self.files)
+        self.bytes_total = sum(f["size"] for f in self.files)
+
+    def as_json(self) -> dict:
+        return {
+            "id": self.id,
+            "direction": self.direction,
+            "peer": self.peer,
+            "status": self.status,
+            "error": self.error,
+            "files": [dict(f) for f in self.files],
+            "bytesTotal": self.bytes_total,
+            "bytesDone": self.bytes_done,
+            "startedMs": self.started_ms,
+        }
+
+
+class History:
+    def __init__(self) -> None:
+        self.entries: list[dict] = []
+        self._lock = threading.RLock()
+        self.load()
+
+    def path(self) -> Path:
+        return config_dir() / "history.json"
+
+    def load(self) -> None:
+        try:
+            raw = json.loads(self.path().read_text())
+            entries = raw.get("entries", []) if isinstance(raw, dict) else []
+            self.entries = [e for e in entries if isinstance(e, dict)]
+        except (OSError, json.JSONDecodeError):
+            self.entries = []
+
+    def save(self) -> None:
+        try:
+            self.path().write_text(json.dumps({"entries": self.entries}, indent=2) + "\n")
+        except OSError as exc:
+            print(f"localsendd: cannot save history: {exc}", file=sys.stderr)
+
+    def has(self, entry_id: str) -> bool:
+        return any(e.get("id") == entry_id for e in self.entries)
+
+    def push(self, entry: dict) -> None:
+        self.entries.insert(0, entry)
+        del self.entries[HISTORY_MAX:]
+
+    def clear(self) -> None:
+        self.entries = []
+
+
+class AppState:
+    def __init__(self, cfg: dict, device: dict):
+        self.cfg = cfg
+        self.device = device
+        self.lock = threading.RLock()
+        self.peers: dict[str, dict] = {}
+        self.sessions: dict[str, Session] = {}
+        self.prompts: dict[str, Prompt] = {}
+        self.favorites = list(cfg.get("favorites") or [])
+        self.auto_accept = bool(cfg.get("auto_accept_favorites"))
+        self.history = History()
+        self.last_seen = time.time()
+        self.idle_exit = 0
+        self.shutdown = threading.Event()
+
+    # --- lifecycle ---------------------------------------------------------
+    def touch(self) -> None:
+        self.last_seen = time.time()
+
+    def idle_secs(self) -> float:
+        return time.time() - self.last_seen
+
+    def quiescent(self) -> bool:
+        with self.lock:
+            busy = any(s.status in ("running", "waiting", "negotiating") for s in self.sessions.values())
+            return not busy and not self.prompts
+
+    # --- peers -------------------------------------------------------------
+    def upsert_peer(self, info: dict, ip: str) -> bool:
+        fp = str(info.get("fingerprint") or "")
+        if not fp or fp == self.device["fingerprint"]:
+            return False
+        peer = {
+            "fingerprint": fp,
+            "alias": str(info.get("alias") or "unknown"),
+            "deviceModel": str(info.get("deviceModel") or ""),
+            "deviceType": str(info.get("deviceType") or ""),
+            "ip": ip,
+            "port": int(info.get("port") or DEFAULT_PORT),
+            "protocol": str(info.get("protocol") or "https"),
+            "_seen": time.time(),
+        }
+        with self.lock:
+            is_new = fp not in self.peers
+            self.peers[fp] = peer
+        return is_new
+
+    def remove_peer(self, fingerprint: str) -> None:
+        with self.lock:
+            self.peers.pop(fingerprint, None)
+
+    def prune_peers(self) -> None:
+        cutoff = time.time() - PEER_TTL
+        with self.lock:
+            for fp in [fp for fp, p in self.peers.items() if p["_seen"] < cutoff]:
+                del self.peers[fp]
+
+    def peer(self, fingerprint: str) -> dict | None:
+        with self.lock:
+            return self.peers.get(fingerprint)
+
+    # --- history / settings -------------------------------------------------
+    def sync_history(self) -> None:
+        with self.lock:
+            pending = [
+                s
+                for s in self.sessions.values()
+                if s.status in TERMINAL and not self.history.has(s.id)
+            ]
+        if not pending:
+            return
+        with self.history._lock:
+            added = False
+            for s in pending:
+                if self.history.has(s.id):
+                    continue
+                self.history.push(
+                    {
+                        "id": s.id,
+                        "direction": s.direction,
+                        "peer": s.peer,
+                        "status": s.status,
+                        "error": s.error,
+                        "bytes": s.bytes_done,
+                        "files": [{"name": f["name"], "size": f["size"]} for f in s.files],
+                        "startedMs": s.started_ms,
+                        "finishedMs": now_ms(),
+                    }
+                )
+                added = True
+            if added:
+                self.history.save()
+
+    def clear_history(self) -> None:
+        with self.history._lock:
+            self.history.clear()
+            self.history.save()
+
+    def set_favorite(self, fingerprint: str, favorite: bool) -> None:
+        with self.lock:
+            if favorite:
+                if fingerprint not in self.favorites:
+                    self.favorites.append(fingerprint)
+            else:
+                self.favorites = [f for f in self.favorites if f != fingerprint]
+            favorites = list(self.favorites)
+        self.cfg["favorites"] = favorites
+        save_config(self.cfg)
+
+    def set_auto_accept(self, enabled: bool) -> None:
+        with self.lock:
+            self.auto_accept = enabled
+        self.cfg["auto_accept_favorites"] = enabled
+        save_config(self.cfg)
+
+    # --- snapshot for the applet -------------------------------------------
+    def snapshot(self) -> dict:
+        with self.lock:
+            peers = sorted(self.peers.values(), key=lambda p: p["alias"].lower())
+            peers = [{k: v for k, v in p.items() if not k.startswith("_")} for p in peers]
+            sessions = sorted(self.sessions.values(), key=lambda s: -s.started_ms)
+            sessions = [s.as_json() for s in sessions]
+            prompts = sorted((p.as_json() for p in self.prompts.values()), key=lambda p: p["createdMs"])
+            favorites = list(self.favorites)
+            auto_accept = self.auto_accept
+        with self.history._lock:
+            history = [dict(e) for e in self.history.entries]
+        return {
+            "daemon": {
+                "version": APP_VERSION,
+                "protocol": PROTOCOL_VERSION,
+                "alias": self.device["alias"],
+                "port": self.device["port"],
+                "fingerprint": self.device["fingerprint"],
+                "downloadDir": self.cfg["download_dir"],
+                "pinRequired": bool(self.cfg.get("pin")),
+            },
+            "favorites": favorites,
+            "autoAcceptFavorites": auto_accept,
+            "history": history,
+            "peers": peers,
+            "sessions": sessions,
+            "prompts": prompts,
+        }
+
+
+# --------------------------------------------------------------------------- HTTPS receive server
+class SendHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    state: AppState  # injected
+
+    # LocalSend peers poll often; keep the journal readable.
+    def log_message(self, fmt, *args):  # noqa: A003 - stdlib signature
+        pass
+
+    # --- plumbing ----------------------------------------------------------
+    def _json(self, code: int, payload) -> None:
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _text(self, code: int, text: str) -> None:
+        body = text.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _peer_ip(self) -> str:
+        return str(self.client_address[0])
+
+    def _query(self) -> dict[str, str]:
+        q = parse_qs(urlsplit(self.path).query)
+        return {k: v[0] for k, v in q.items() if v}
+
+    def _read_chunk(self, size: int = 64 * 1024) -> bytes:
+        """Read the next piece of the request body, honouring chunked framing."""
+        if self._chunked:
+            if self._chunk_left == 0:
+                line = self.rfile.readline(1024).strip()
+                if not line:
+                    return b""
+                self._chunk_left = int(line.split(b";")[0], 16)
+                if self._chunk_left == 0:
+                    self.rfile.readline(1024)  # trailing CRLF
+                    self._body_done = True
+                    return b""
+            data = self.rfile.read(min(size, self._chunk_left))
+            self._chunk_left -= len(data)
+            if self._chunk_left == 0:
+                self.rfile.read(2)  # CRLF after the chunk
+            return data
+        remaining = self._body_left
+        if remaining <= 0:
+            self._body_done = True
+            return b""
+        data = self.rfile.read(min(size, remaining))
+        self._body_left -= len(data)
+        if self._body_left <= 0:
+            self._body_done = True
+        return data
+
+    def _body_json(self):
+        raw = b""
+        while not self._body_done:
+            chunk = self._read_chunk()
+            if not chunk:
+                break
+            raw += chunk
+        try:
+            return json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            return None
+
+    def _prepare_body(self) -> None:
+        self._chunked = self.headers.get("Transfer-Encoding", "").lower() == "chunked"
+        self._chunk_left = 0
+        self._body_left = int(self.headers.get("Content-Length") or 0)
+        self._body_done = False
+
+    # --- routes ------------------------------------------------------------
+    def do_GET(self):  # noqa: N802 - stdlib naming
+        self._prepare_body()
+        if urlsplit(self.path).path == PATH_INFO:
+            self._json(200, self.state.device)
+            return
+        self._text(404, "not found")
+
+    def do_POST(self):  # noqa: N802 - stdlib naming
+        self._prepare_body()
+        route = urlsplit(self.path).path
+        handlers = {
+            PATH_REGISTER: self.register,
+            PATH_PREPARE: self.prepare_upload,
+            PATH_UPLOAD: self.upload,
+            PATH_CANCEL: self.cancel,
+        }
+        handler = handlers.get(route)
+        if handler is None:
+            self._text(404, "not found")
+            return
+        handler()
+
+    def register(self) -> None:
+        peer = self._body_json()
+        if isinstance(peer, dict) and peer.get("fingerprint"):
+            self.state.upsert_peer(peer, self._peer_ip())
+        self._json(200, self.state.device)
+
+    def prepare_upload(self) -> None:
+        st = self.state
+        pin = st.cfg.get("pin")
+        if pin and self._query().get("pin") != pin:
+            self._text(401, "Pin required")
+            return
+        payload = self._body_json()
+        if not isinstance(payload, dict):
+            self._text(400, "Bad request")
+            return
+        info = payload.get("info")
+        if not isinstance(info, dict):
+            self._text(400, "Missing sender info")
+            return
+        files_meta = payload.get("files")
+        if not isinstance(files_meta, dict) or not files_meta:
+            self._text(400, "No files in request")
+            return
+
+        peer_ip = self._peer_ip()
+        st.upsert_peer(info, peer_ip)
+
+        session = Session("receive", str(info.get("alias") or "unknown"))
+        for fid, meta in files_meta.items():
+            session.tokens[fid] = str(uuid.uuid4())
+            session.files.append(
+                {
+                    "id": fid,
+                    "name": sanitize_file_name(str(meta.get("fileName") or "file")),
+                    "size": int(meta.get("size") or 0),
+                    "bytes": 0,
+                    "status": "pending",
+                }
+            )
+        session.files.sort(key=lambda f: f["name"])
+        session.recompute()
+        session.status = "waiting"
+        with st.lock:
+            st.sessions[session.id] = session
+
+        trusted = st.auto_accept and str(info.get("fingerprint") or "") in st.favorites
+        if trusted:
+            session.status = "running"
+            self._json(200, {"sessionId": session.id, "files": session.tokens})
+            return
+
+        prompt = Prompt(session.id, session.peer, peer_ip, session.files)
+        with st.lock:
+            st.prompts[prompt.id] = prompt
+        answered = prompt.event.wait(PROMPT_TIMEOUT)
+        with st.lock:
+            st.prompts.pop(prompt.id, None)
+
+        if not answered:
+            session.status = "timed out"
+            session.error = "no answer from user"
+            self._text(408, "No response from receiver")
+            return
+        if not prompt.accepted:
+            session.status = "declined"
+            self._text(403, "Blocked by receiver")
+            return
+        session.status = "running"
+        self._json(200, {"sessionId": session.id, "files": session.tokens})
+
+    def upload(self) -> None:
+        st = self.state
+        q = self._query()
+        session_id = q.get("sessionId", "")
+        file_id = q.get("fileId", "")
+        token = q.get("token", "")
+        with st.lock:
+            session = st.sessions.get(session_id)
+            if session is None:
+                self._text(403, "Unknown session")
+                return
+            if session.tokens.get(file_id) != token:
+                self._text(403, "Invalid token")
+                return
+            if session.status == "cancelled":
+                self._text(403, "Session cancelled")
+                return
+            entry = next((f for f in session.files if f["id"] == file_id), None)
+            if entry is None:
+                self._text(400, "Unknown file")
+                return
+            file_name = entry["name"]
+        directory = Path(st.cfg["download_dir"])
+        directory.mkdir(parents=True, exist_ok=True)
+        dest = unique_path(directory, file_name)
+
+        written = 0
+        flushed = 0
+        try:
+            with open(dest, "wb") as out:
+                while not self._body_done:
+                    chunk = self._read_chunk()
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    written += len(chunk)
+                    if written - flushed >= PROGRESS_STEP:
+                        flushed = written
+                        self._mark_file(session, file_id, "receiving", written)
+        except OSError as exc:
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+            self._mark_file(session, file_id, "error", written, f"write failed: {exc}")
+            self._text(500, f"write: {exc}")
+            return
+
+        all_done = self._mark_file(session, file_id, "done", written)
+        if all_done:
+            session.status = "done"
+        self._json(200, {"savedTo": str(dest)})
+
+    def cancel(self) -> None:
+        q = self._query()
+        with self.state.lock:
+            session = self.state.sessions.get(q.get("sessionId", ""))
+            if session is not None:
+                session.status = "cancelled"
+        self._text(200, "cancelled")
+
+    @staticmethod
+    def _mark_file(session: Session, file_id: str, status: str, written: int, error=None) -> bool:
+        entry = next((f for f in session.files if f["id"] == file_id), None)
+        if entry is not None:
+            entry["bytes"] = max(entry["bytes"], written)
+            entry["status"] = status
+        if error:
+            session.error = error
+            session.status = "error"
+        session.recompute()
+        return all(f["status"] == "done" for f in session.files)
+
+
+class ReceiveServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def start_receive_server(state: AppState, cert: CertPair) -> ReceiveServer:
+    handler = type("BoundSendHandler", (SendHandler,), {"state": state})
+    httpd = ReceiveServer(("0.0.0.0", state.device["port"]), handler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(str(cert.cert_path), str(cert.key_path))
+    # LocalSend peers use self-signed certs and authenticate by fingerprint, not by PKI.
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.set_alpn_protocols(["http/1.1"])
+    httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    threading.Thread(target=httpd.serve_forever, name="receive", daemon=True).start()
+    return httpd
+
+
+# --------------------------------------------------------------------------- discovery
+def discovery_port() -> int:
+    """Protocol port, overridable so tests can scope announcements to one socket."""
+    try:
+        return int(os.environ.get("LOCALSENDD_DISCOVERY_PORT") or DISCOVERY_PORT)
+    except ValueError:
+        return DISCOVERY_PORT
+
+
+def bind_discovery() -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, "SO_REUSEPORT"):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
+    sock.bind(("", discovery_port()))
+    mreq = struct.pack("4s4s", socket.inet_aton(MULTICAST_ADDR), socket.inet_aton("0.0.0.0"))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)
+    return sock
+
+
+def announce(sock: socket.socket, device: dict, state: AppState, target=None, hello: bool = True) -> None:
+    payload = dict(device)
+    payload["announce"] = hello
+    raw = json.dumps(payload).encode()
+    port = discovery_port()
+    targets = [target] if target else [(MULTICAST_ADDR, port)]
+    if target is None:
+        targets += [(p["ip"], port) for p in list(state.peers.values())]
+    for addr in targets:
+        try:
+            sock.sendto(raw, addr)
+        except OSError:
+            pass
+
+
+def discovery_loop(state: AppState, device: dict) -> None:
+    try:
+        sock = bind_discovery()
+    except OSError as exc:
+        print(f"localsendd: discovery disabled: {exc}", file=sys.stderr)
+        return
+    announce(sock, device, state, hello=True)
+    sock.settimeout(1.0)
+    last_hello = last_prune = time.time()
+    while not state.shutdown.is_set():
+        try:
+            raw, addr = sock.recvfrom(64 * 1024)
+        except socket.timeout:
+            raw, addr = None, None
+        except OSError:
+            if state.shutdown.is_set():
+                break
+            continue
+        now = time.time()
+        if raw:
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                msg = None
+            fp = str((msg or {}).get("fingerprint") or "")
+            if msg and fp and fp != device["fingerprint"]:
+                if not msg.get("announce", True):
+                    state.remove_peer(fp)
+                elif state.upsert_peer(msg, str(addr[0])):
+                    # Answer immediately so the peer does not wait for our next tick.
+                    announce(sock, device, state, target=addr, hello=True)
+        if now - last_hello >= 5:
+            last_hello = now
+            announce(sock, device, state, hello=True)
+        if now - last_prune >= 10:
+            last_prune = now
+            state.prune_peers()
+    announce(sock, device, state, hello=False)
+    sock.close()
+
+
+# --------------------------------------------------------------------------- sending
+def _client_context(cert: CertPair) -> ssl.SSLContext:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # Peers are authenticated by fingerprint after discovery, not by the CA store.
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.load_cert_chain(str(cert.cert_path), str(cert.key_path))
+    ctx.set_alpn_protocols(["http/1.1"])
+    return ctx
+
+
+def _base_url(peer: dict) -> str:
+    scheme = "http" if str(peer["protocol"]).lower() == "http" else "https"
+    host = peer["ip"]
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{scheme}://{host}:{peer['port']}"
+
+
+def _connection(peer: dict, cert: CertPair):
+    if str(peer["protocol"]).lower() == "http":
+        return http.client.HTTPConnection(peer["ip"], peer["port"], timeout=15)
+    return http.client.HTTPSConnection(
+        peer["ip"], peer["port"], timeout=15, context=_client_context(cert)
+    )
+
+
+def start_send(state: AppState, peer: dict, paths: list[str], cert: CertPair) -> str:
+    if not paths:
+        raise ValueError("no files given")
+    session = Session("send", peer["alias"])
+    metas: dict[str, dict] = {}
+    items: list[tuple[Path, str]] = []
+    for raw in paths:
+        path = Path(raw).expanduser()
+        if not path.is_file():
+            raise ValueError(f"not a regular file: {path}")
+        fid = str(uuid.uuid4())
+        size = path.stat().st_size
+        metas[fid] = {
+            "id": fid,
+            "fileName": path.name,
+            "size": size,
+            "fileType": mime_for(path),
+        }
+        session.files.append(
+            {"id": fid, "name": path.name, "size": size, "bytes": 0, "status": "pending"}
+        )
+        items.append((path, fid))
+    session.recompute()
+    with state.lock:
+        state.sessions[session.id] = session
+
+    def worker() -> None:
+        try:
+            _run_send(state, session, peer, items, metas, cert)
+        except Exception as exc:  # noqa: BLE001 - any failure lands in the session
+            with state.lock:
+                session.status = "error"
+                session.error = str(exc) or exc.__class__.__name__
+            print(f"send {session.id} failed: {exc}", file=sys.stderr)
+
+    threading.Thread(target=worker, name="send", daemon=True).start()
+    return session.id
+
+
+def _run_send(state, session, peer, items, metas, cert) -> None:
+    conn = _connection(peer, cert)
+    payload = json.dumps({"info": state.device, "files": metas}).encode()
+    conn.request(
+        "POST",
+        PATH_PREPARE,
+        body=payload,
+        headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+    )
+    resp = conn.getresponse()
+    body = resp.read()
+    if resp.status == 401:
+        raise RuntimeError("receiver requires a PIN")
+    if resp.status == 403:
+        raise RuntimeError("receiver declined the transfer")
+    if resp.status != 200:
+        raise RuntimeError(f"prepare-upload rejected with HTTP {resp.status}: {body[:120]!r}")
+    prepared = json.loads(body or b"{}")
+    remote_session = str(prepared.get("sessionId") or "")
+    tokens = prepared.get("files") or {}
+    conn.close()
+
+    with state.lock:
+        session.tokens = dict(tokens)
+        session.status = "running"
+
+    for path, fid in items:
+        token = tokens.get(fid)
+        if not token:
+            raise RuntimeError(f"peer returned no token for {path}")
+        size = path.stat().st_size
+        conn = _connection(peer, cert)
+        target = f"{PATH_UPLOAD}?sessionId={remote_session}&fileId={fid}&token={token}"
+        conn.putrequest("POST", target)
+        conn.putheader("Content-Type", "application/octet-stream")
+        conn.putheader("Content-Length", str(size))
+        conn.endheaders()
+        sent = 0
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(256 * 1024)
+                if not chunk:
+                    break
+                conn.send(chunk)
+                sent += len(chunk)
+                if sent // PROGRESS_STEP != (sent - len(chunk)) // PROGRESS_STEP:
+                    with state.lock:
+                        entry = next((f for f in session.files if f["id"] == fid), None)
+                        if entry is not None:
+                            entry["bytes"] = sent
+                            entry["status"] = "sending"
+                        session.recompute()
+        resp = conn.getresponse()
+        resp.read()
+        code = resp.status
+        conn.close()
+        if code >= 300:
+            raise RuntimeError(f"upload rejected with HTTP {code}")
+        with state.lock:
+            entry = next((f for f in session.files if f["id"] == fid), None)
+            if entry is not None:
+                entry["bytes"] = size
+                entry["status"] = "done"
+            session.recompute()
+
+    with state.lock:
+        session.status = "done"
+        session.recompute()
+
+
+# --------------------------------------------------------------------------- control plane
+def ok(payload: dict) -> dict:
+    return {"ok": True, **payload}
+
+
+def err(msg: str) -> dict:
+    return {"ok": False, "error": msg}
+
+
+def dispatch(state: AppState, req: dict, cert: CertPair) -> dict:
+    state.touch()
+    method = str(req.get("method") or "")
+    if method == "ping":
+        return ok({"pid": os.getpid()})
+    if method == "state":
+        return ok(state.snapshot())
+    if method == "send":
+        fingerprint = str(req.get("peer") or "")
+        peer = state.peer(fingerprint)
+        if peer is None:
+            return err(f"unknown peer '{fingerprint}' (still scanning?)")
+        paths = req.get("paths")
+        if not isinstance(paths, list):
+            return err("send needs a paths array")
+        try:
+            sid = start_send(state, peer, [str(p) for p in paths], cert)
+        except Exception as exc:  # noqa: BLE001
+            return err(str(exc))
+        return ok({"sessionId": sid})
+    if method == "respond":
+        prompt_id = str(req.get("prompt") or "")
+        accept = bool(req.get("accept"))
+        with state.lock:
+            prompt = state.prompts.pop(prompt_id, None)
+        if prompt is None:
+            return err(f"unknown prompt '{prompt_id}'")
+        prompt.accepted = accept
+        prompt.event.set()
+        if not accept:
+            with state.lock:
+                session = state.sessions.get(prompt.session_id)
+                if session is not None:
+                    session.status = "declined"
+        return ok({"sessionId": prompt.session_id, "accepted": accept})
+    if method == "cancel":
+        session_id = str(req.get("sessionId") or "")
+        with state.lock:
+            session = state.sessions.get(session_id)
+            if session is None:
+                return err(f"unknown session '{session_id}'")
+            session.status = "cancelled"
+        return ok({"sessionId": session_id})
+    if method == "history":
+        with state.history._lock:
+            return ok({"entries": [dict(e) for e in state.history.entries]})
+    if method == "clear-history":
+        state.clear_history()
+        return ok({"cleared": True})
+    if method == "favorite":
+        fingerprint = str(req.get("peer") or "")
+        if not fingerprint:
+            return err("favorite needs a peer")
+        favorite = bool(req.get("favorite"))
+        state.set_favorite(fingerprint, favorite)
+        return ok({"peer": fingerprint, "favorite": favorite})
+    if method == "auto-accept":
+        enabled = bool(req.get("enabled"))
+        state.set_auto_accept(enabled)
+        return ok({"autoAcceptFavorites": enabled})
+    if method == "shutdown":
+        state.shutdown.set()
+        return ok({"stopping": True})
+    return err(f"unknown method '{method}'")
+
+
+def serve_control(state: AppState, cert: CertPair) -> socket.socket:
+    directory = runtime_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = socket_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    os.chmod(path, 0o600)
+    listener.listen(16)
+    print(f"localsendd: control socket {path}", file=sys.stderr)
+
+    def handle(conn: socket.socket) -> None:
+        with conn:
+            conn.settimeout(30)
+            buf = b""
+            try:
+                while b"\n" not in buf:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        return
+                    buf += chunk
+                line = buf.split(b"\n", 1)[0]
+                try:
+                    req = json.loads(line or b"{}")
+                except json.JSONDecodeError:
+                    req = {}
+                resp = dispatch(state, req, cert)
+            except OSError as exc:
+                resp = err(f"control request failed: {exc}")
+            try:
+                conn.sendall(json.dumps(resp).encode() + b"\n")
+            except OSError:
+                pass
+
+    def accept_loop() -> None:
+        while not state.shutdown.is_set():
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                if state.shutdown.is_set():
+                    break
+                continue
+            threading.Thread(target=handle, args=(conn,), name="ctl", daemon=True).start()
+
+    threading.Thread(target=accept_loop, name="ctl-accept", daemon=True).start()
+    return listener
+
+
+def wait_ready(timeout: float = 6.0) -> bool:
+    path = socket_path()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists():
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                probe.settimeout(0.5)
+                probe.connect(str(path))
+                return True
+            except OSError:
+                pass
+            finally:
+                probe.close()
+        time.sleep(0.025)
+    return False
+
+
+# --------------------------------------------------------------------------- single instance
+def acquire_instance_lock():
+    """flock on daemon.lock: visible, cheap, and survives a stale socket file."""
+    runtime_dir().mkdir(parents=True, exist_ok=True)
+    fd = open(lock_path(), "a+")
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        fd.close()
+        if exc.errno in (errno.EAGAIN, errno.EACCES):
+            return None
+        raise
+    return fd
+
+
+def acquire_namespace_guard():
+    """Abstract unix socket name: released on death, shared per network namespace, so it also
+    refuses a daemon started from a sandbox with a different $XDG_RUNTIME_DIR. Tests override the
+    name (LOCALSENDD_GUARD_NAME) because they share the namespace with the real daemon."""
+    name = os.environ.get("LOCALSENDD_GUARD_NAME") or "localsend-applet-%d" % os.getuid()
+    guard = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        guard.bind("\0" + name)
+    except OSError:
+        guard.close()
+        return None
+    guard.listen(1)
+    return guard
+
+
+def write_pid() -> None:
+    runtime_dir().mkdir(parents=True, exist_ok=True)
+    pid_path().write_text(str(os.getpid()))
+
+
+def cleanup_runtime() -> None:
+    for path in (socket_path(), pid_path()):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------- main
+def pick_port(preferred: int) -> int:
+    for offset in range(0, 20):
+        port = preferred + offset
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("0.0.0.0", port))
+            return port
+        except OSError:
+            continue
+        finally:
+            probe.close()
+    raise RuntimeError(f"no free TCP port in range {preferred}..{preferred + 20}")
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="localsendd",
+        description="LocalSend v2 backend daemon (control socket in $XDG_RUNTIME_DIR)",
+        add_help=True,
+    )
+    parser.add_argument("--alias", help="advertised device name (default user@host)")
+    parser.add_argument("--port", type=int, help="preferred HTTPS port (auto-increments if busy)")
+    parser.add_argument("--download-dir", help="where received files are stored")
+    parser.add_argument("--pin", help="require this PIN from senders")
+    parser.add_argument(
+        "--idle-exit",
+        type=int,
+        default=900,
+        help="exit after this long without a widget heartbeat (0 = never, default 900)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    cfg = load_config()
+    overridden = False
+    if args.alias is not None:
+        cfg["alias"] = args.alias
+        overridden = True
+    if args.port is not None:
+        cfg["port"] = args.port
+        overridden = True
+    if args.download_dir is not None:
+        cfg["download_dir"] = args.download_dir
+        overridden = True
+    if args.pin is not None:
+        cfg["pin"] = args.pin
+        overridden = True
+
+    instance = acquire_instance_lock()
+    if instance is None:
+        print("localsendd: another instance is already running, exiting", file=sys.stderr)
+        return 0
+    guard = acquire_namespace_guard()
+    if guard is None:
+        print("localsendd: another instance holds the abstract socket, exiting", file=sys.stderr)
+        return 0
+    write_pid()
+
+    Path(cfg["download_dir"]).mkdir(parents=True, exist_ok=True)
+    cert = ensure_cert()
+    persist = not overridden
+    if cfg.get("fingerprint") != cert.fingerprint:
+        cfg["fingerprint"] = cert.fingerprint
+        persist = True
+    port = pick_port(int(cfg.get("port") or DEFAULT_PORT))
+    if persist:
+        save_config(cfg)
+
+    device = {
+        "alias": cfg["alias"],
+        "version": APP_VERSION,
+        "deviceModel": "Linux",
+        "deviceType": "desktop",
+        "fingerprint": cert.fingerprint,
+        "port": port,
+        "protocol": "https",
+        "download": False,
+    }
+    state = AppState(cfg, device)
+    state.idle_exit = max(0, args.idle_exit)
+    state.touch()
+
+    # Bind the receive server before the control socket answers: a supervisor that sees a live
+    # control socket must not race a half-started HTTPS listener.
+    start_receive_server(state, cert)
+    serve_control(state, cert)
+    if not wait_ready():
+        print("localsendd: control socket never became reachable", file=sys.stderr)
+        return 1
+
+    def watchdog() -> None:
+        period = min(max(state.idle_exit // 4, 2), 15) if state.idle_exit else 15
+        while not state.shutdown.wait(period):
+            if state.idle_exit and state.idle_secs() >= state.idle_exit and state.quiescent():
+                print("localsendd: no widget heartbeat, exiting", file=sys.stderr)
+                state.shutdown.set()
+                return
+
+    def history_sync() -> None:
+        while not state.shutdown.wait(2):
+            state.sync_history()
+
+    threading.Thread(target=watchdog, name="watchdog", daemon=True).start()
+    threading.Thread(target=history_sync, name="history", daemon=True).start()
+    if os.environ.get("LOCALSENDD_DISCOVERY", "1") != "0":
+        threading.Thread(
+            target=discovery_loop, args=(state, device), name="discovery", daemon=True
+        ).start()
+
+    print(
+        f"localsendd: alias='{device['alias']}' https://0.0.0.0:{port} "
+        f"download-dir='{cfg['download_dir']}' fingerprint={device['fingerprint']}",
+        file=sys.stderr,
+    )
+
+    def stop(signum, _frame):
+        state.shutdown.set()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+
+    try:
+        while not state.shutdown.wait(0.5):
+            pass
+    finally:
+        state.sync_history()
+        cleanup_runtime()
+        print("localsendd: stopped", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

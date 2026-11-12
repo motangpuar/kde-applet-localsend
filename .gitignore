@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.json.bak
+# staged by `make backend`; never commit the package payload
+/plasmoid/io.github.localsend.plasmoid/contents/backend/localsendd
+/plasmoid/io.github.localsend.plasmoid/contents/backend/localsendctl

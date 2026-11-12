@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""localsendctl - thin CLI client for localsendd.
+
+Talks newline-delimited JSON to the daemon's unix control socket, so it needs no session bus and no
+systemd; every command prints JSON on stdout for the plasmoid to parse.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import sys
+import time
+from pathlib import Path
+
+USAGE = """localsendctl - control the localsendd daemon
+
+USAGE:
+  localsendctl state                      # full daemon snapshot (JSON)
+  localsendctl peers                      # discovered peers only (JSON)
+  localsendctl send <peer-id> <path>...   # queue a transfer
+  localsendctl respond <prompt-id> <accept|reject>
+  localsendctl cancel <session-id>
+  localsendctl history                    # persisted transfer history (JSON)
+  localsendctl clear-history              # drop the history
+  localsendctl favorite <peer-id> <on|off>
+  localsendctl auto-accept <on|off>       # trust favorites without prompting
+  localsendctl shutdown                   # stop the daemon
+  localsendctl wait-ready [timeout-ms]    # block until daemon answers
+"""
+
+
+def runtime_dir() -> Path:
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if base:
+        return Path(base) / "localsend-applet"
+    cache = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(cache) / "localsend-applet" / "run"
+
+
+def socket_path() -> Path:
+    return runtime_dir() / "control.sock"
+
+
+def request(payload: dict, timeout: float = 10.0) -> dict:
+    path = socket_path()
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(timeout)
+    try:
+        conn.connect(str(path))
+        conn.sendall(json.dumps(payload).encode() + b"\n")
+        buf = b""
+        while b"\n" not in buf:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+    finally:
+        conn.close()
+    if not buf:
+        raise RuntimeError(f"no answer from {path}")
+    return json.loads(buf.split(b"\n", 1)[0] or b"{}")
+
+
+def fail(msg: str) -> None:
+    print(json.dumps({"ok": False, "error": msg}))
+    sys.exit(1)
+
+
+def on_off(value: str) -> bool:
+    return value in ("on", "yes", "true", "1", "accept")
+
+
+def main(argv: list[str]) -> int:
+    args = argv or ["state"]
+    cmd = args[0]
+    if cmd in ("-h", "--help", "help"):
+        sys.stdout.write(USAGE)
+        return 0
+
+    if cmd in ("state", "peers"):
+        payload = {"method": "state"}
+    elif cmd == "send":
+        if len(args) < 3:
+            fail("usage: localsendctl send <peer-id> <path>...")
+        payload = {"method": "send", "peer": args[1], "paths": args[2:]}
+    elif cmd == "respond":
+        if len(args) < 3:
+            fail("usage: localsendctl respond <prompt-id> <accept|reject>")
+        payload = {"method": "respond", "prompt": args[1], "accept": on_off(args[2])}
+    elif cmd == "cancel":
+        if len(args) < 2:
+            fail("usage: localsendctl cancel <session-id>")
+        payload = {"method": "cancel", "sessionId": args[1]}
+    elif cmd == "history":
+        payload = {"method": "history"}
+    elif cmd == "clear-history":
+        payload = {"method": "clear-history"}
+    elif cmd == "favorite":
+        if len(args) < 3:
+            fail("usage: localsendctl favorite <peer-id> <on|off>")
+        payload = {"method": "favorite", "peer": args[1], "favorite": on_off(args[2])}
+    elif cmd == "auto-accept":
+        if len(args) < 2:
+            fail("usage: localsendctl auto-accept <on|off>")
+        payload = {"method": "auto-accept", "enabled": on_off(args[1])}
+    elif cmd == "shutdown":
+        payload = {"method": "shutdown"}
+    elif cmd == "ping":
+        payload = {"method": "ping"}
+    elif cmd == "wait-ready":
+        timeout = int(args[1]) if len(args) > 1 and args[1].isdigit() else 5000
+        deadline = time.time() + timeout / 1000.0
+        while True:
+            try:
+                if request({"method": "ping"}, timeout=1.0).get("ok") is True:
+                    print(json.dumps({"ok": True}))
+                    return 0
+            except (OSError, RuntimeError, json.JSONDecodeError):
+                pass
+            if time.time() > deadline:
+                fail("daemon not reachable on its control socket")
+            time.sleep(0.25)
+    else:
+        fail(f"unknown command '{cmd}'\n{USAGE}")
+
+    try:
+        response = request(payload)
+    except (OSError, RuntimeError, json.JSONDecodeError) as exc:
+        fail(str(exc))
+    # Compact separators: `manage.sh` probes stdout for the literal `"ok":true`.
+    if cmd == "peers":
+        print(json.dumps(response.get("peers", []), separators=(",", ":")))
+    else:
+        print(json.dumps(response, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
