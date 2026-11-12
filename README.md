@@ -105,7 +105,9 @@ Uninstall:
 | Send a file | drag files onto the tray icon, or **Send…** and pick files, then tap a device (the popup re-opens after the file picker) |
 | Force a discovery round | refresh button in the popup header (`ctl scan`) |
 | Accept an incoming transfer | popup prompt with file list; or star a device and enable auto-accept |
-| Inspect history | *History* tab: day-grouped cards with peer, size, duration, average rate, file names and a status chip for anything that did not complete |
+| Inspect history | *History* tab: day-grouped cards with peer, size, duration, average rate, per-file sizes and a status chip for anything that did not complete |
+| Open a transferred file | click its row in the History tab (one file opens, several are revealed together) |
+| Open or reveal from the clipboard menu | right-click a row: **Open File** or **Open File Location**, with the file pre-selected in Dolphin |
 | Star / unstar a device | ★ on the device row, or **Trust this device** in the detail view |
 | Clear history | *Clear* in the History tab |
 

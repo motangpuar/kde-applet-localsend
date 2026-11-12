@@ -10,6 +10,8 @@
 #   sh manage.sh enable | disable            flip the user-visible master switch
 #   sh manage.sh query-enabled               LOCALSEND_ENABLED | LOCALSEND_DISABLED
 #   sh manage.sh ctl <args...>               run localsendctl against the staged copy
+#   sh manage.sh open <path>                 open a file with the desktop's default handler
+#   sh manage.sh reveal <path...>            show files in the file manager, pre-selected
 #
 # The master switch lives in a marker file (`$DATA/disabled`), not only in the plasmoid config:
 # KConfig silently dropped the key once and left the backend dead with no trace. The marker is the
@@ -48,6 +50,7 @@ while [ $# -gt 0 ]; do
         enable)  ACTION=ensure; WANT_ENABLE=1; shift ;;
         disable) ACTION=stop;   WANT_DISABLE=1; shift ;;
         ctl) ACTION=ctl; shift; CTL_ARGS="$*"; break ;;
+        open|reveal) ACTION=$1; shift; break ;;
         --idle-exit) IDLE=${2:?--idle-exit needs a value}; shift 2 ;;
         *) printf 'manage: unknown argument %s\n' "$1" >&2; exit 64 ;;
     esac
@@ -129,7 +132,56 @@ stop_daemon() {
     printf 'LOCALSEND_STOPPED\n'
 }
 
+# The widget cannot call D-Bus or stat files, so the shell does it: one JSON line back.
+json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
 case "$ACTION" in
+    open)
+        if [ $# -eq 0 ]; then
+            printf 'manage: open needs a path\n' >&2
+            exit 64
+        fi
+        if [ ! -e "$1" ]; then
+            printf '{"ok":false,"reason":"missing","path":"%s"}\n' "$(json_escape "$1")"
+            exit 4
+        fi
+        # Detach: the widget polls, it must not wait for the viewer to exit.
+        ( xdg-open "$1" >/dev/null 2>&1 & ) || true
+        printf '{"ok":true}\n'
+        ;;
+    reveal)
+        if [ $# -eq 0 ]; then
+            printf 'manage: reveal needs a path\n' >&2
+            exit 64
+        fi
+        PRESENT=""
+        URIS=""
+        for _p in "$@"; do
+            [ -e "$_p" ] || continue
+            PRESENT="$_p"
+            _u=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$_p" 2>/dev/null) || _u=""
+            [ -n "$_u" ] && URIS="${URIS:+$URIS,}$_u"
+        done
+        if [ -z "$PRESENT" ]; then
+            printf '{"ok":false,"reason":"missing"}\n'
+            exit 4
+        fi
+        # org.freedesktop.FileManager1 is the cross-desktop contract for "select these files".
+        if [ -n "$URIS" ] && command -v dbus-send >/dev/null 2>&1 \
+            && dbus-send --session --type=method_call --dest=org.freedesktop.FileManager1 \
+               /org/freedesktop/FileManager1 org.freedesktop.FileManager1.ShowItems \
+               "array:string:$URIS" string:localsend >/dev/null 2>&1; then
+            printf '{"ok":true,"via":"filemanager1"}\n'
+            exit 0
+        fi
+        if command -v dolphin >/dev/null 2>&1; then
+            ( dolphin --select "$@" >/dev/null 2>&1 & ) || true
+            printf '{"ok":true,"via":"dolphin"}\n'
+            exit 0
+        fi
+        ( xdg-open "$(dirname -- "$PRESENT")" >/dev/null 2>&1 & ) || true
+        printf '{"ok":true,"via":"xdg-open"}\n'
+        ;;
     query-enabled)
         if [ -e "$SWITCH" ]; then printf 'LOCALSEND_DISABLED\n'; else printf 'LOCALSEND_ENABLED\n'; fi
         ;;

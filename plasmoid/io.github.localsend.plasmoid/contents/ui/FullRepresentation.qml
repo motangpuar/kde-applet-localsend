@@ -66,7 +66,7 @@ Item {
         return count === 1 ? i18n("1 file") : i18n("%1 files", count)
     }
 
-    /// "3 files · 29.8 MiB · 2.1 s · 14.2 MiB/s · 00:20" — everything the entry knows.
+    /// "3 files · 29.8 MiB · 2.1 s · 14.2 MiB/s" — the time of day lives in the row corner.
     function historyMeta(entry, fileCount, duration) {
         const parts = [full.filesLabel(fileCount), applet.formatBytes(entry.bytes || 0)]
         if (duration > 0) {
@@ -76,18 +76,51 @@ Item {
                 parts.push(rate)
             }
         }
-        parts.push(applet.formatClock(entry.finishedMs || entry.startedMs))
         return parts.join(" · ")
     }
 
-    /// First two file names, then "+N more": long albums stay on one line.
-    function fileListLabel(files) {
-        const names = (files || []).map(f => (f && f.name) ? String(f.name) : "").filter(n => n.length > 0)
-        if (names.length === 0) {
-            return ""
+    function moreFilesLabel(count) {
+        return count === 1 ? i18n("1 more file") : i18n("%1 more files", count)
+    }
+
+    /// Paths the daemon recorded for this transfer; entries from older runs have none.
+    function entryPaths(entry) {
+        const files = (entry && entry.files) || []
+        const out = []
+        for (let i = 0; i < files.length; ++i) {
+            const path = String((files[i] && files[i].path) || "")
+            if (path.length > 0) {
+                out.push(path)
+            }
         }
-        const shown = names.slice(0, 2).join(", ")
-        return names.length > 2 ? i18n("%1 +%2 more", shown, names.length - 2) : shown
+        return out
+    }
+
+    /// Left click: one file opens, several are revealed together (that is what a card stands for).
+    function openEntry(entry) {
+        const paths = full.entryPaths(entry)
+        if (paths.length === 1) {
+            applet.openPath(paths[0])
+        } else if (paths.length > 1) {
+            applet.revealPaths(paths)
+        }
+    }
+
+    property var menuPaths: []
+
+    /// Right click: act on the clicked file, or on the whole transfer when the card was hit.
+    /// `point` is in `full` coordinates, which is also the menu's parent coordinate system.
+    function showFileMenu(paths, point) {
+        const list = (paths || []).filter(path => String(path || "").length > 0)
+        if (list.length === 0) {
+            return
+        }
+        full.menuPaths = list
+        if (point) {
+            historyMenu.x = point.x
+            historyMenu.y = point.y
+        }
+        historyMenu.open()
     }
 
     readonly property var historyRows: applet.history || []
@@ -357,6 +390,9 @@ Item {
             Item { Layout.fillWidth: true }
             PlasmaComponents3.Label {
                 visible: applet.page === "history" && full.historySummary.total > 0
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                horizontalAlignment: Text.AlignRight
                 opacity: 0.75
                 font: Kirigami.Theme.smallFont
                 text: full.historySummaryLine()
@@ -467,6 +503,8 @@ Item {
             Layout.minimumHeight: Kirigami.Units.gridUnit * 4
             visible: applet.page === "history"
             clip: true
+            topMargin: Kirigami.Units.smallSpacing
+            bottomMargin: Kirigami.Units.largeSpacing
             model: full.historyRows
             spacing: 0
             boundsBehavior: Flickable.StopAtBounds
@@ -476,58 +514,90 @@ Item {
                 required property var modelData
                 required property int index
 
-                readonly property real stamp: Number(modelData.finishedMs || modelData.startedMs || 0)
+                readonly property var entry: modelData || ({})
+                readonly property real stamp: Number(entry.finishedMs || entry.startedMs || 0)
                 readonly property var previousEntry: index > 0 ? (full.historyRows[index - 1] || null) : null
                 readonly property bool startsDay: !previousEntry
-                    || full.dayKey(Number(previousEntry.finishedMs || previousEntry.startedMs || 0))
-                       !== full.dayKey(stamp)
-                readonly property int fileCount: (modelData.files || []).length
+                    || applet.dayKey(Number(previousEntry.finishedMs || previousEntry.startedMs || 0))
+                       !== applet.dayKey(stamp)
+                readonly property var files: entry.files || []
+                readonly property var shownFiles: files.slice(0, 3)
+                readonly property int hiddenFiles: Math.max(0, files.length - shownFiles.length)
                 readonly property real duration:
-                    Math.max(0, Number(modelData.finishedMs || 0) - Number(modelData.startedMs || 0))
-                readonly property bool failed: modelData.status !== "done"
+                    Math.max(0, Number(entry.finishedMs || 0) - Number(entry.startedMs || 0))
+                readonly property bool failed: entry.status !== "done"
+                readonly property var paths: full.entryPaths(entry)
+                readonly property bool actionable: paths.length > 0
 
                 width: historyList.width
-                spacing: Kirigami.Units.smallSpacing
+                spacing: Kirigami.Units.largeSpacing
 
                 PlasmaComponents3.Label {
                     visible: historyRow.startsDay
                     Layout.fillWidth: true
-                    Layout.topMargin: historyRow.index === 0 ? 0 : Kirigami.Units.smallSpacing
-                    Layout.bottomMargin: Kirigami.Units.smallSpacing
+                    Layout.topMargin: historyRow.index === 0 ? 0 : Kirigami.Units.largeSpacing
+                    Layout.bottomMargin: -Kirigami.Units.smallSpacing
                     text: applet.dayLabel(historyRow.stamp)
                     font.pointSize: Kirigami.Theme.smallFont.pointSize
                     font.bold: true
-                    opacity: 0.75
+                    opacity: 0.6
                 }
 
                 Rectangle {
+                    id: historyCard
+                    readonly property var status: historyRow.entry.status
+
                     Layout.fillWidth: true
-                    implicitHeight: historyCard.implicitHeight + Kirigami.Units.smallSpacing * 2
+                    implicitHeight: historyCardLayout.implicitHeight + Kirigami.Units.largeSpacing * 2
                     radius: Kirigami.Units.smallSpacing
                     color: historyRow.failed
                            ? Qt.rgba(Kirigami.Theme.negativeTextColor.r,
                                      Kirigami.Theme.negativeTextColor.g,
-                                     Kirigami.Theme.negativeTextColor.b, 0.08)
-                           : Kirigami.Theme.alternateBackgroundColor
+                                     Kirigami.Theme.negativeTextColor.b,
+                                     historyCardMouse.containsMouse ? 0.14 : 0.08)
+                           : (historyCardMouse.containsMouse
+                              ? Kirigami.Theme.hoverColor
+                              : Kirigami.Theme.alternateBackgroundColor)
+
+                    // Handles the card body: file rows above it consume their own clicks.
+                    MouseArea {
+                        id: historyCardMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        cursorShape: historyRow.actionable ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: (mouse) => {
+                            if (!historyRow.actionable) {
+                                return
+                            }
+                            if (mouse.button === Qt.RightButton) {
+                                full.showFileMenu(historyRow.paths,
+                                                  historyCardMouse.mapToItem(full, mouse.x, mouse.y))
+                            } else {
+                                full.openEntry(historyRow.entry)
+                            }
+                        }
+                    }
 
                     RowLayout {
-                        id: historyCard
+                        id: historyCardLayout
                         anchors.fill: parent
-                        anchors.margins: Kirigami.Units.smallSpacing
-                        spacing: Kirigami.Units.smallSpacing
+                        anchors.margins: Kirigami.Units.largeSpacing
+                        spacing: Kirigami.Units.largeSpacing
 
                         Kirigami.Icon {
                             Layout.alignment: Qt.AlignTop
+                            Layout.topMargin: Kirigami.Units.smallSpacing
                             implicitWidth: Kirigami.Units.iconSizes.smallMedium
                             implicitHeight: implicitWidth
-                            source: historyRow.modelData.direction === "send" ? "document-send"
-                                                                             : "document-save"
-                            color: full.statusColor(historyRow.modelData.status)
+                            source: historyRow.entry.direction === "send" ? "document-send"
+                                                                         : "document-save"
+                            color: full.statusColor(historyCard.status)
                         }
 
                         ColumnLayout {
                             Layout.fillWidth: true
-                            spacing: 0
+                            spacing: Kirigami.Units.smallSpacing
 
                             RowLayout {
                                 Layout.fillWidth: true
@@ -537,55 +607,127 @@ Item {
                                     Layout.fillWidth: true
                                     elide: Text.ElideRight
                                     font.bold: true
-                                    text: historyRow.modelData.direction === "send"
-                                          ? i18n("Sent to %1", historyRow.modelData.peer || i18n("unknown device"))
-                                          : i18n("Received from %1", historyRow.modelData.peer || i18n("unknown device"))
+                                    text: historyRow.entry.direction === "send"
+                                          ? i18n("Sent to %1", historyRow.entry.peer || i18n("unknown device"))
+                                          : i18n("Received from %1", historyRow.entry.peer || i18n("unknown device"))
                                 }
 
                                 Rectangle {
                                     Layout.alignment: Qt.AlignVCenter
                                     visible: historyRow.failed
-                                    implicitWidth: historyChipLabel.implicitWidth + Kirigami.Units.smallSpacing * 2
-                                    implicitHeight: historyChipLabel.implicitHeight + Kirigami.Units.smallSpacing
+                                    implicitWidth: historyChipLabel.implicitWidth + Kirigami.Units.largeSpacing
+                                    implicitHeight: historyChipLabel.implicitHeight + Kirigami.Units.smallSpacing / 2
                                     radius: height / 2
-                                    color: Qt.rgba(full.statusColor(historyRow.modelData.status).r,
-                                                   full.statusColor(historyRow.modelData.status).g,
-                                                   full.statusColor(historyRow.modelData.status).b, 0.18)
+                                    color: Qt.rgba(full.statusColor(historyCard.status).r,
+                                                   full.statusColor(historyCard.status).g,
+                                                   full.statusColor(historyCard.status).b, 0.18)
 
                                     PlasmaComponents3.Label {
                                         id: historyChipLabel
                                         anchors.centerIn: parent
-                                        text: full.statusText(historyRow.modelData.status)
-                                        color: full.statusColor(historyRow.modelData.status)
+                                        text: full.statusText(historyCard.status)
+                                        color: full.statusColor(historyCard.status)
                                         font.pointSize: Kirigami.Theme.smallFont.pointSize
                                         font.bold: true
                                     }
+                                }
+
+                                PlasmaComponents3.Label {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    text: applet.formatClock(historyRow.stamp)
+                                    opacity: 0.55
+                                    font: Kirigami.Theme.smallFont
                                 }
                             }
 
                             PlasmaComponents3.Label {
                                 Layout.fillWidth: true
                                 elide: Text.ElideRight
-                                opacity: 0.8
+                                opacity: 0.75
                                 font: Kirigami.Theme.smallFont
-                                text: full.historyMeta(historyRow.modelData, historyRow.fileCount,
+                                text: full.historyMeta(historyRow.entry, historyRow.files.length,
                                                        historyRow.duration)
                             }
 
+                            Repeater {
+                                model: historyRow.shownFiles
+
+                                delegate: Item {
+                                    id: historyFile
+                                    required property var modelData
+
+                                    readonly property string path: String((modelData && modelData.path) || "")
+                                    readonly property bool known: path.length > 0
+
+                                    Layout.fillWidth: true
+                                    implicitHeight: historyFileName.implicitHeight
+                                                    + Kirigami.Units.smallSpacing * 2
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: Kirigami.Units.smallSpacing / 2
+                                        color: historyFileMouse.containsMouse && historyFile.known
+                                               ? Kirigami.Theme.hoverColor
+                                               : "transparent"
+                                    }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: Kirigami.Units.smallSpacing
+                                        anchors.rightMargin: Kirigami.Units.smallSpacing
+                                        spacing: Kirigami.Units.smallSpacing
+
+                                        PlasmaComponents3.Label {
+                                            id: historyFileName
+                                            Layout.fillWidth: true
+                                            text: (modelData && modelData.name) ? String(modelData.name) : ""
+                                            elide: Text.ElideMiddle
+                                            opacity: 0.85
+                                            font: Kirigami.Theme.smallFont
+                                        }
+
+                                        PlasmaComponents3.Label {
+                                            text: applet.formatBytes((modelData && modelData.size) || 0)
+                                            opacity: 0.5
+                                            font: Kirigami.Theme.smallFont
+                                        }
+                                    }
+
+                                    MouseArea {
+                                        id: historyFileMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                        cursorShape: historyFile.known ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                        onClicked: (mouse) => {
+                                            if (!historyFile.known) {
+                                                return
+                                            }
+                                            if (mouse.button === Qt.RightButton) {
+                                                full.showFileMenu([historyFile.path],
+                                                                  historyFileMouse.mapToItem(full, mouse.x, mouse.y))
+                                            } else {
+                                                applet.openPath(historyFile.path)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             PlasmaComponents3.Label {
+                                visible: historyRow.hiddenFiles > 0
                                 Layout.fillWidth: true
-                                visible: text.length > 0
-                                text: full.fileListLabel(historyRow.modelData.files)
-                                elide: Text.ElideMiddle
-                                opacity: 0.7
+                                Layout.leftMargin: Kirigami.Units.smallSpacing
+                                text: full.moreFilesLabel(historyRow.hiddenFiles)
+                                opacity: 0.55
                                 font: Kirigami.Theme.smallFont
                             }
 
                             PlasmaComponents3.Label {
                                 Layout.fillWidth: true
                                 visible: historyRow.failed
-                                         && String(historyRow.modelData.error || "").length > 0
-                                text: historyRow.modelData.error || ""
+                                         && String(historyRow.entry.error || "").length > 0
+                                text: historyRow.entry.error || ""
                                 color: Kirigami.Theme.negativeTextColor
                                 font: Kirigami.Theme.smallFont
                                 wrapMode: Text.WordWrap
@@ -609,7 +751,25 @@ Item {
             text: i18n("No transfers yet. Sent and received files show up here.")
         }
 
-        // ---- footer: master switch + trust settings ----
+        // One menu, re-targeted with full.menuPaths: a Menu per delegate would leak items.
+    PlasmaComponents3.Menu {
+        id: historyMenu
+
+        PlasmaComponents3.MenuItem {
+            icon.name: "document-open"
+            text: i18n("Open File")
+            enabled: full.menuPaths.length === 1
+            onTriggered: applet.openPath(full.menuPaths[0])
+        }
+
+        PlasmaComponents3.MenuItem {
+            icon.name: "folder-open-symbolic"
+            text: i18n("Open File Location")
+            onTriggered: applet.revealPaths(full.menuPaths)
+        }
+    }
+
+    // ---- footer: master switch + trust settings ----
         ColumnLayout {
             Layout.fillWidth: true
             spacing: Kirigami.Units.smallSpacing

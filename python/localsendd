@@ -317,6 +317,24 @@ class History:
         except OSError as exc:
             print(f"localsendd: cannot save history: {exc}", file=sys.stderr)
 
+    def backfill_paths(self, download_dir: str) -> None:
+        """Entries written before paths were recorded: recover the receive target by name."""
+        base = Path(download_dir)
+        changed = False
+        with self._lock:
+            for entry in self.entries:
+                if entry.get("direction") != "receive":
+                    continue
+                for item in entry.get("files") or []:
+                    if item.get("path") or not item.get("name"):
+                        continue
+                    candidate = base / str(item["name"])
+                    if candidate.exists():
+                        item["path"] = str(candidate)
+                        changed = True
+            if changed:
+                self.save()
+
     def has(self, entry_id: str) -> bool:
         return any(e.get("id") == entry_id for e in self.entries)
 
@@ -339,6 +357,7 @@ class AppState:
         self.favorites = list(cfg.get("favorites") or [])
         self.auto_accept = bool(cfg.get("auto_accept_favorites"))
         self.history = History()
+        self.history.backfill_paths(cfg["download_dir"])
         self.last_seen = time.time()
         self.idle_exit = 0
         self.shutdown = threading.Event()
@@ -412,7 +431,10 @@ class AppState:
                         "status": s.status,
                         "error": s.error,
                         "bytes": s.bytes_done,
-                        "files": [{"name": f["name"], "size": f["size"]} for f in s.files],
+                        "files": [
+                            {"name": f["name"], "size": f["size"], **({"path": f["path"]} if f.get("path") else {})}
+                            for f in s.files
+                        ],
                         "startedMs": s.started_ms,
                         "finishedMs": now_ms(),
                     }
@@ -671,6 +693,10 @@ class SendHandler(BaseHTTPRequestHandler):
         directory = Path(st.cfg["download_dir"])
         directory.mkdir(parents=True, exist_ok=True)
         dest = unique_path(directory, file_name)
+        # Remember where the bytes landed: the widget opens entries from history, and a
+        # transfer may have been renamed by unique_path() to avoid an overwrite.
+        with st.lock:
+            entry["path"] = str(dest)
 
         written = 0
         flushed = 0
@@ -885,7 +911,8 @@ def start_send(state: AppState, peer: dict, paths: list[str], cert: CertPair) ->
             "fileType": mime_for(path),
         }
         session.files.append(
-            {"id": fid, "name": path.name, "size": size, "bytes": 0, "status": "pending"}
+            {"id": fid, "name": path.name, "size": size, "bytes": 0, "status": "pending",
+             "path": str(path.resolve())}
         )
         items.append((path, fid))
     session.recompute()

@@ -3,6 +3,16 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+Round 13 (2026-11-13): history entries became actionable and the card layout got a proper hierarchy.
+The daemon now records `path` per file (receive: the real `unique_path()` target; send: the resolved
+source) and backfills older receive entries by looking the name up in the download dir. Left click on a
+file row opens it, several files open through `reveal`; right click opens a shared `PlasmaComponents3.Menu`
+with *Open File* / *Open File Location*. Both go through new `manage.sh open|reveal` verbs — `reveal`
+tries `org.freedesktop.FileManager1.ShowItems`, then `dolphin --select`, then the parent dir via
+`xdg-open`, because QML has no D-Bus or file API here. Layout: hour moved to the card corner, meta line
+dropped the clock, file rows show name plus size with hover feedback, chip uses `font.pointSize` (grouped
+`font` assignment is illegal), spacing unified on `Kirigami.Units.{small,large}Spacing`.
+
 Round 12 (2026-11-13): release engineering and history UX. `scripts/package.sh` is the only packaging
 path — stages the backend, stamps the version, builds `build/<id>-<version>.plasmoid`, then verifies
 metadata id/version, required files, safe paths, executable bits and absence of `__pycache__`. CI runs

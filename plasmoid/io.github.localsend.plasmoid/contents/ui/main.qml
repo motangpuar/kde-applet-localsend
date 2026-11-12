@@ -386,6 +386,28 @@ PlasmoidItem {
         exec.run("xdg-open " + q(dir), null, null)
     }
 
+    /// Hand a path to the shell helper: QML has no file API and no D-Bus here.
+    function openPath(path) {
+        const target = String(path || "")
+        if (target.length === 0) {
+            return
+        }
+        exec.run("sh " + q(root.managePath) + " open " + q(target), null, null)
+    }
+
+    /// Show the given files in the file manager with the first one selected.
+    function revealPaths(paths) {
+        const list = (paths || []).filter(p => String(p || "").length > 0)
+        if (list.length === 0) {
+            return
+        }
+        let command = "sh " + q(root.managePath) + " reveal"
+        for (let i = 0; i < list.length; ++i) {
+            command += " " + q(list[i])
+        }
+        exec.run(command, null, null)
+    }
+
     function sendTo(fingerprint) {
         root.pendingPeer = fingerprint
         fileDialog.open()

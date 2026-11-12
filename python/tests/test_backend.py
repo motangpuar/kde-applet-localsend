@@ -242,6 +242,8 @@ class ReceiveFlowTests(HermeticDirs):
             time.sleep(0.2)
         self.assertEqual(history[0]["status"], "done")
         self.assertEqual(history[0]["files"][0]["name"], "hello.bin")
+        # The widget opens entries from history, so the recorded path must be the real one.
+        self.assertEqual(Path(history[0]["files"][0]["path"]), saved_to.resolve())
 
     def test_decline_answers_403(self):
         port = free_port()
@@ -454,6 +456,10 @@ class SendFlowTests(unittest.TestCase):
             self.assertEqual(session.files[0]["bytes"], len(blob))
             self.assertEqual(received["data"], blob)
             self.assertIn("token=tok-", received["query"])
+
+            # History keeps the source path so the widget can open or reveal the sent file.
+            state.sync_history()
+            self.assertEqual(Path(state.history.entries[0]["files"][0]["path"]), source.resolve())
             httpd.shutdown()
         finally:
             if old is None:
