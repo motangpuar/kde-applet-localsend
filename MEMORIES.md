@@ -3,6 +3,12 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+Released `v0.2.0` (2026-11-13): metadata bumped to 0.2.0, `make ci` green, CI run 43265066216 ok,
+release run 43265080749 published `io.github.localsend.plasmoid-0.2.0.plasmoid` (sha256 `5a70b38c…`)
+plus `SHA256SUMS`; that asset was installed on the host and plasmashell restarted clean.
+Archive checksums differ between two builds of identical trees: `zip` stores source mtimes, so builds are
+content-identical but not bit-reproducible (fix would be a Python zipfile writer with a pinned timestamp).
+
 Round 13 (2026-11-13): history entries became actionable and the card layout got a proper hierarchy.
 The daemon now records `path` per file (receive: the real `unique_path()` target; send: the resolved
 source) and backfills older receive entries by looking the name up in the download dir. Left click on a
