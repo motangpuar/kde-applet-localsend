@@ -495,7 +495,7 @@ Item {
                     Layout.topMargin: historyRow.index === 0 ? 0 : Kirigami.Units.smallSpacing
                     Layout.bottomMargin: Kirigami.Units.smallSpacing
                     text: applet.dayLabel(historyRow.stamp)
-                    font: Kirigami.Theme.smallFont
+                    font.pointSize: Kirigami.Theme.smallFont.pointSize
                     font.bold: true
                     opacity: 0.75
                 }
@@ -557,7 +557,7 @@ Item {
                                         anchors.centerIn: parent
                                         text: full.statusText(historyRow.modelData.status)
                                         color: full.statusColor(historyRow.modelData.status)
-                                        font: Kirigami.Theme.smallFont
+                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
                                         font.bold: true
                                     }
                                 }
