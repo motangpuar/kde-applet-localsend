@@ -49,6 +49,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 say "1/4 staging $PLASMOID_ID"
 mkdir -p "$OUT_DIR"
+# The archive is written from inside the staging dir, so the output path must be absolute.
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 STAGE="$WORK/$PLASMOID_ID"
 mkdir -p "$STAGE"
 cp -a "$SRC/." "$STAGE/"
