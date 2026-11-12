@@ -250,6 +250,9 @@ Logs in the shell: `journalctl --user -f | grep localsend` (the widget logs peer
 
 ## Development
 
+Release notes live in [CHANGELOG.md](CHANGELOG.md), and the text used for the KDE Store listing in
+[docs/kde-store.md](docs/kde-store.md).
+
 ```bash
 make test      # 11 unittest cases: TLS loopback, prompts, PIN, sender, single instance, persistence
 make lint      # py_compile the backend and tests
