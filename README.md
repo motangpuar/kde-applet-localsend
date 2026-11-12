@@ -59,6 +59,20 @@ Design rules, in priority order:
 
 ---
 
+## Icon
+
+`contents/icons/io.github.localsend.plasmoid.svg` is the app icon and
+`io.github.localsend.plasmoid-symbolic.svg` the monochrome variant the panel uses where a symbolic
+icon is requested. Both are authored on a documented grid (64 units for the tile, 24 for the
+symbolic mark), so tray, dialog and store renders all come from one source.
+
+![Icon at tray, dialog and store sizes on light and dark backgrounds](docs/icon-preview.png)
+
+Left to right per row: 16, 22, 24, 32, 48, 64 and 128 px. Row 3 compares the previous icon with
+this one, row 4 is the symbolic variant. The mark is point-symmetric by construction (the up arrow
+maps onto the down arrow under a 180° rotation), which is asserted in the design notes rather than
+eyeballed: mirror the render, rotate it, and the pixel difference is antialiasing noise.
+
 ## Install
 
 Two ways in. **Release archive** (what the tray widget ships as):

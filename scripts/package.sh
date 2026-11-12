@@ -111,6 +111,7 @@ required = {
     "contents/backend/localsendd",
     "contents/backend/localsendctl",
     "contents/icons/" + expected_id + ".svg",
+    "contents/icons/" + expected_id + "-symbolic.svg",
 }
 with zipfile.ZipFile(archive) as zf:
     names = {n for n in zf.namelist() if not n.endswith("/")}

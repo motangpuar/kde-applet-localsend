@@ -3,6 +3,20 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+## Icon (2026-11-13)
+Replaced the placeholder icon with a designed pair: `contents/icons/io.github.localsend.plasmoid.svg`
+(64-unit grid, 56-unit tile with 6.25% margins, 6-unit stroke so the glyph is still 2.06 px at the
+22 px tray render) and `io.github.localsend.plasmoid-symbolic.svg` (24 grid, 2-unit stroke, mark spans
+4..20 = 75% of the box like Breeze symbolic icons, `currentColor` + `ColorScheme-Text`).
+Gradient stops chosen numerically for contrast against the white glyph: `#12997e` = 3.6:1 (the 3:1
+graphics minimum), `#0a6b5e` = 6.4:1; the previous `#3fd9ae` top was 1.8:1, i.e. white arrows on it
+were nearly invisible. `docs/icon-preview.png` is a generated size/background sheet (ImageMagick +
+rsvg-convert, no vision needed): `magick montage` of centred cells. Verification that works without
+eyes: corner alpha 0 at every size, trim bbox inside the tile, equal ink in the left and right halves
+(7094 units each) and 180°-rotation RMSE 0.001 (the mark is ⇅, so a horizontal flip is *not* the
+correct symmetry test — it reads 0.16 and means nothing).
+`scripts/package.sh` now also requires the symbolic file in the archive (12 files).
+
 Released `v0.2.0` (2026-11-13): metadata bumped to 0.2.0, `make ci` green, CI run 43265066216 ok,
 release run 43265080749 published `io.github.localsend.plasmoid-0.2.0.plasmoid` (sha256 `5a70b38c…`)
 plus `SHA256SUMS`; that asset was installed on the host and plasmashell restarted clean.

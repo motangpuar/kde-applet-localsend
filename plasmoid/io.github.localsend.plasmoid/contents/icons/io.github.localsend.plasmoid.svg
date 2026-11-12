@@ -1,17 +1,37 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- LocalSend applet icon: blue badge, opposed up/down arrows (send + receive). -->
-<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+<!--
+  LocalSend applet icon.
+
+  Grid: 64 x 64 units, drawn at 1 unit = 1 px for the 64 px render.
+  Tile: 4..60 (56 units, 6.25% safe margin on every side) so the rounded square keeps
+        its optical size when Plasma draws it in a panel next to Breeze icons.
+  Mark: two arrows in opposition — up on the left, down on the right — i.e. the same
+        6-unit stroke everywhere, so the glyph survives the 22 px tray render
+        (6 / 64 * 22 = 2.06 px, the minimum that still antialiases cleanly).
+  Colour: teal-to-green, the LocalSend family hue. Stops are picked for contrast against
+          the white glyph: #12997e is 3.6:1 (the 3:1 minimum for non-text graphics) and
+          #0a6b5e is 6.4:1, so neither arrow head sits on a washed-out field.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>LocalSend</title>
+  <desc>Send and receive files on the local network</desc>
+
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#54c8f5"/>
-      <stop offset="1" stop-color="#1d6fa5"/>
+    <linearGradient id="tile" x1="0.12" y1="0" x2="0.88" y2="1">
+      <stop offset="0" stop-color="#12997e"/>
+      <stop offset="1" stop-color="#0a6b5e"/>
     </linearGradient>
   </defs>
-  <rect x="10" y="10" width="236" height="236" rx="54" fill="url(#bg)"/>
-  <g fill="none" stroke="#ffffff" stroke-width="24" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M92 176V84"/>
-    <path d="M62 114L92 82l30 32"/>
-    <path d="M164 80v92"/>
-    <path d="M134 142l30 32 30-32"/>
+
+  <rect x="4" y="4" width="56" height="56" rx="13" ry="13" fill="url(#tile)"/>
+
+  <g fill="none" stroke="#ffffff" stroke-width="6"
+     stroke-linecap="round" stroke-linejoin="round">
+    <!-- outbound: shaft plus a 7-unit head either side of it -->
+    <path d="M23 45V19"/>
+    <path d="M16 26l7-7 7 7"/>
+    <!-- inbound, mirror of the above: the mark stays symmetric about x = 32 -->
+    <path d="M41 19v26"/>
+    <path d="M34 38l7 7 7-7"/>
   </g>
 </svg>

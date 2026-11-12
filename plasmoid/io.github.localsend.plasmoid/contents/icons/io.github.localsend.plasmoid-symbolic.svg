@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Monochrome variant: same exchange mark as the app icon, no tile.
+  Plasma picks this up where a symbolic icon is asked for (panel with "use symbolic
+  icons", monochrome menus); `currentColor` plus the ColorScheme classes let the
+  theme recolor it, exactly like a Breeze symbolic icon.
+  Grid: 24 x 24, 2-unit stroke. The mark spans 4..20 on both axes, i.e. 75% of the box,
+  which is where Breeze symbolic icons sit so it lines up in size with its neighbours.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <title>LocalSend</title>
+  <g class="ColorScheme-Text" fill="none" stroke="currentColor" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round" color="#232629">
+    <path d="M8 20V4"/>
+    <path d="M4 8l4-4 4 4"/>
+    <path d="M16 4v16"/>
+    <path d="M12 16l4 4 4-4"/>
+  </g>
+</svg>
