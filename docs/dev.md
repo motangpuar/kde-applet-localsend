@@ -114,6 +114,7 @@ printf '{"method":"state"}\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/localsend-
 | Control socket | `0600` inside `$XDG_RUNTIME_DIR`, single line requests, no shell involved |
 | Downloads | Written to a `.localsend.part` sibling, size checked against the announcement, renamed on the last byte; stale parts are swept at startup |
 | Privileges | Never runs as root, binds no privileged port, the widget starts and stops the daemon |
+| Tray icon | `iconPath` (a loaded SVG or PNG) wins over `iconName` (a theme icon), both empty means the packaged mark; theme names go through `Kirigami.Icon`, files through `Image`, since `Kirigami.Icon` is a theme lookup and does not scale arbitrary files |
 
 `history.json` is trimmed in one place, `History._prune()`: anything older than `HISTORY_DAYS` (90)
 or beyond `HISTORY_MAX` (200) is dropped, on load as well as on push. Trimming on load means an old or
@@ -206,7 +207,8 @@ Pin the timestamps in `package.sh` if a reproducible sha256 matters.
 `contents/icons/io.github.localsend.plasmoid.svg` sits on a 64 unit grid: 56 unit tile with 6.25
 percent margins, 6 unit stroke, so the glyph is still 2.06 px at the 22 px panel size. The gradient
 stops come from measured contrast against the white glyph, 3.6:1 at the light end and 6.4:1 at the
-dark end. `io.github.localsend.plasmoid-symbolic.svg` is the monochrome variant: 24 grid, 2 unit
+dark end. `io.github.localsend.plasmoid-symbolic.svg` is the monochrome variant, kept in the package so a panel
+that wants a flat mark can load it through **Load Image…**: 24 grid, 2 unit
 stroke, mark spanning 4 to 20, `currentColor` plus `ColorScheme-Text`.
 
 ImageMagick and `rsvg-convert` regenerate the review sheet, no design tool in the loop:

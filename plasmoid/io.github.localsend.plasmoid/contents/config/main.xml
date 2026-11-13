@@ -7,9 +7,12 @@
     <entry name="showNotifications" type="Bool">
       <default>true</default>
     </entry>
-    <!-- Tray icon variant: colored package icon, its symbolic twin, or a theme icon. -->
-    <entry name="iconStyle" type="String">
-      <default>colored</default>
+    <!-- Tray icon: a theme icon name and an optional image file, which wins when set. -->
+    <entry name="iconName" type="String">
+      <default></default>
+    </entry>
+    <entry name="iconPath" type="String">
+      <default></default>
     </entry>
     <!-- Master switch: off stops the daemon (no discovery, no transfers). -->
     <entry name="networkEnabled" type="Bool">
