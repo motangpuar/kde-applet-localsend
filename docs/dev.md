@@ -173,6 +173,21 @@ directories. Test hooks, never set in production:
 They exist because the suite shares the network namespace with the live daemon and `SO_REUSEPORT`
 load balances multicast between local sockets.
 
+## Checking the settings page without eyes
+
+`org.kde.iconthemes` `IconDialog` is a widget dialog: it wants a `QApplication`. The `qml` and
+`qmlscene` runners are `QGuiApplication`, so merely instantiating it there segfaults inside
+`QWidget::windowTitle()`. plasmashell links QtWidgets, so the page is fine in production. To load the
+page off screen, wrap it in a ten line `QQmlApplicationEngine` inside a `QApplication` and drive it
+from a `Loader` plus a `Timer`:
+
+- A read-only property assigned in QML kills the *whole* page silently, which is how the General tab
+  once came up empty: `IconDialog.iconName` is read-only and cannot preselect the current icon.
+- Report results through the exit code, `Qt.exit(nodes)`, because `console.log` does not always reach
+  the terminal in this container.
+- `QT_FORCE_STDERR_LOGGING=1` restores error output.
+- The margin check is numeric: `page=720x420 form=18,18,684,384` proves the grid unit margins.
+
 ## Packaging and releases
 
 `scripts/package.sh` is the single packaging path. It stages a temp copy, installs `localsendd` and

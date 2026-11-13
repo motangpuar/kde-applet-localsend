@@ -38,18 +38,18 @@ Item {
             Kirigami.Icon {
                 visible: page.cfg_iconName !== ""
                 source: page.cfg_iconName
-                implicitWidth: Kirigami.Units.iconSizes.medium
-                implicitHeight: implicitWidth
+                Layout.preferredWidth: Kirigami.Units.iconSizes.medium
+                Layout.preferredHeight: Kirigami.Units.iconSizes.medium
             }
 
             Image {
                 visible: page.cfg_iconName === ""
                 source: page.cfg_iconPath !== "" ? "file://" + page.cfg_iconPath : page.defaultIcon
                 fillMode: Image.PreserveAspectFit
-                sourceSize.width: Kirigami.Units.iconSizes.medium
-                sourceSize.height: Kirigami.Units.iconSizes.medium
-                implicitWidth: Kirigami.Units.iconSizes.medium
-                implicitHeight: implicitWidth
+                sourceSize.width: Kirigami.Units.iconSizes.medium * 2
+                sourceSize.height: Kirigami.Units.iconSizes.medium * 2
+                Layout.preferredWidth: Kirigami.Units.iconSizes.medium
+                Layout.preferredHeight: Kirigami.Units.iconSizes.medium
             }
 
             QQC2.Label {
@@ -91,10 +91,10 @@ Item {
     }
 
     // The same icon picker the menu editor uses: search, categories, and a browse button.
+    // Its iconName is read-only, so the current choice cannot be preselected; only the result is read.
     KIconThemes.IconDialog {
         id: iconDialog
         title: i18n("Choose Tray Icon")
-        iconName: page.cfg_iconName !== "" ? page.cfg_iconName : "network-transmit-receive"
         onAccepted: {
             if (iconDialog.iconName !== "") {
                 page.cfg_iconName = iconDialog.iconName
