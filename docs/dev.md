@@ -22,6 +22,13 @@ For install, use and troubleshooting, read the [README](../README.md).
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+A prompt shows up twice: as a notification with **Accept** and **Decline** actions, and as buttons in
+the popup. The notification is `notify-send --action accept=Accept --action decline=Decline`, which
+implies `--wait` and prints the chosen action name, so the executable engine's completion callback
+answers the prompt. Dismissing the notification answers nothing: the popup and the 5 minute daemon
+timeout still decide. The command carries a `# prompt:<id>` comment because the executable engine
+matches completions by command string and two prompts can otherwise look identical.
+
 The daemon is the only part that speaks the protocol. QML never opens a socket: it shells out to
 `manage.sh`, which stages the Python payload under `~/.local/share/localsend-applet/bin/` and runs it.
 

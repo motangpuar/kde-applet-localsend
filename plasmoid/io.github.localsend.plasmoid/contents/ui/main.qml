@@ -49,6 +49,8 @@ PlasmoidItem {
                                        && ((!daemonUp && lastError.length === 0) || starting)
     property double lastStartAttempt: 0
     property var announcedPrompts: ({})
+    /// Prompts that already produced an actionable notification, so a refresh does not stack them.
+    property var notifiedPrompts: ({})
     property var announcedSessions: ({})
     property string pendingPeer: ""
     /// True while a manual re-scan is in flight, so the header button can show a spinner.
@@ -264,18 +266,55 @@ PlasmoidItem {
         root.startDaemon()
     }
 
+    /// An incoming prompt shows up as a notification that can be answered without opening the popup.
+    /// The popup keeps its own Accept and Decline buttons, so a dismissed notification is not a
+    /// decision: the daemon still waits, and the click that does arrive wins either way.
     function notifyPrompts() {
         for (let i = 0; i < root.prompts.length; ++i) {
             const prompt = root.prompts[i]
-            if (root.announcedPrompts[prompt.id]) {
+            if (root.notifiedPrompts[prompt.id]) {
                 continue
             }
             root.announcedPrompts[prompt.id] = true
-            const body = i18n("%1 wants to send %2 file(s) · %3", prompt.peerAlias, prompt.fileCount,
-                              root.formatBytes(prompt.bytesTotal))
-            root.notify(i18n("Incoming transfer"), body, "network-transmit-receive")
+            root.notifiedPrompts[prompt.id] = true
+            root.notifyPrompt(prompt)
             root.expanded = true
         }
+        // Drop ids that no longer exist, otherwise both maps grow for the life of the session.
+        const live = ({})
+        for (let i = 0; i < root.prompts.length; ++i) {
+            live[root.prompts[i].id] = true
+        }
+        for (const key in root.notifiedPrompts) {
+            if (!live[key]) {
+                delete root.notifiedPrompts[key]
+                delete root.announcedPrompts[key]
+            }
+        }
+    }
+
+    function notifyPrompt(prompt) {
+        if (!Plasmoid.configuration.showNotifications) {
+            return
+        }
+        const body = i18n("%1 wants to send %2 file(s) · %3", prompt.peerAlias, prompt.fileCount,
+                          root.formatBytes(prompt.bytesTotal))
+        // notify-send implies --wait with --action and prints the chosen action name on stdout,
+        // so the callback only fires once the user answers or dismisses the notification. The
+        // trailing comment is inert to the shell and makes the command unique per prompt, which
+        // is what the executable engine matches its completions on.
+        const command = "notify-send --app-name LocalSend --icon " + q(root.iconPath)
+                        + " --action accept=" + q(i18n("Accept"))
+                        + " --action decline=" + q(i18n("Decline"))
+                        + " " + q(i18n("Incoming transfer")) + " " + q(body)
+                        + " # prompt:" + prompt.id
+        exec.run(command, data => {
+            const answer = String(data.stdout || "").trim()
+            if (answer !== "accept" && answer !== "decline") {
+                return
+            }
+            root.respond(prompt.id, answer === "accept")
+        })
     }
 
     /// One notification per finished transfer: completed receives also announce where the files landed.
