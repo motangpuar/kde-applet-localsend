@@ -99,6 +99,11 @@ printf '{"cmd":"peers"}\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/localsend-app
 | Downloads | Written to a `.localsend.part` sibling, size checked against the announcement, renamed on the last byte; stale parts are swept at startup |
 | Privileges | Never runs as root, binds no privileged port, the widget starts and stops the daemon |
 
+`history.json` is trimmed in one place, `History._prune()`: anything older than `HISTORY_DAYS` (90)
+or beyond `HISTORY_MAX` (200) is dropped, on load as well as on push. Trimming on load means an old or
+hand edited file cannot reintroduce stale rows, and the pruned file is written back straight away.
+Entries with no timestamp are kept, since builds before 0.2.0 did not record one.
+
 ## Protocol scope
 
 Implemented, LocalSend v2.2:

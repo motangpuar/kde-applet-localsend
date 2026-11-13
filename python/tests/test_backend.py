@@ -154,6 +154,63 @@ class UnitTests(unittest.TestCase):
             busy.close()
 
 
+class HistoryRetentionTests(unittest.TestCase):
+    """The ledger stays bounded by count and by age, on read as well as on write."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="lsd-hist-"))
+        self.saved = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = str(self.tmp)
+        self.day = 86400 * 1000
+
+    def tearDown(self) -> None:
+        if self.saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self.saved
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_load_drops_entries_past_the_window(self):
+        history = mod.History()
+        now = mod.now_ms()
+        history.entries = [
+            {"id": "fresh", "finishedMs": now - self.day},
+            {"id": "edge", "finishedMs": now - mod.HISTORY_DAYS * self.day + 60000},
+            {"id": "stale", "finishedMs": now - (mod.HISTORY_DAYS + 1) * self.day},
+            {"id": "legacy"},
+        ]
+        history.save()
+
+        reloaded = mod.History()
+        ids = [entry["id"] for entry in reloaded.entries]
+        self.assertEqual(ids, ["fresh", "edge", "legacy"])
+        on_disk = json.loads(reloaded.path().read_text())["entries"]
+        self.assertEqual([entry["id"] for entry in on_disk], ids)
+
+    def test_push_applies_the_window_and_the_cap(self):
+        history = mod.History()
+        now = mod.now_ms()
+        history.push({"id": "stale", "finishedMs": now - (mod.HISTORY_DAYS + 2) * self.day})
+        self.assertEqual(history.entries, [])
+
+        for index in range(mod.HISTORY_MAX + 25):
+            history.push({"id": f"e{index}", "finishedMs": now})
+        self.assertEqual(len(history.entries), mod.HISTORY_MAX)
+        self.assertEqual(history.entries[0]["id"], f"e{mod.HISTORY_MAX + 24}")
+        self.assertEqual(history.entries[-1]["id"], "e25")
+
+    def test_received_paths_survive_pruning(self):
+        history = mod.History()
+        now = mod.now_ms()
+        history.entries = [
+            {"id": "kept", "direction": "receive", "finishedMs": now, "files": [{"name": "a.jpg", "path": "/x/a.jpg"}]},
+            {"id": "dropped", "direction": "receive", "finishedMs": now - 200 * self.day, "files": [{"name": "b.jpg", "path": "/x/b.jpg"}]},
+        ]
+        history.save()
+        reloaded = mod.History()
+        self.assertEqual([entry["id"] for entry in reloaded.entries], ["kept"])
+        self.assertEqual(reloaded.entries[0]["files"][0]["path"], "/x/a.jpg")
+
 class ReceiveFlowTests(HermeticDirs):
     def test_accept_upload_lands_in_download_dir(self):
         port = free_port()

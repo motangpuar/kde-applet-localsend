@@ -40,6 +40,7 @@ PROMPT_TIMEOUT = 300.0
 PROGRESS_STEP = 512 * 1024
 PART_SUFFIX = ".localsend.part"
 HISTORY_MAX = 200
+HISTORY_DAYS = 90
 
 PATH_INFO = "/api/localsend/v2/info"
 PATH_REGISTER = "/api/localsend/v2/register"
@@ -334,9 +335,36 @@ class History:
             self.entries = [e for e in entries if isinstance(e, dict)]
         except (OSError, json.JSONDecodeError):
             self.entries = []
+            return
+        # A file written by an older build, or edited by hand, can carry entries the current
+        # policy would not keep. Trim on read so retention does not need a second pass.
+        if self._prune():
+            self.save()
+
+    def _prune(self) -> int:
+        """Drop entries older than the retention window and anything past the cap.
+
+        Entries are newest first, so the cap trims the tail. A missing or unparseable timestamp
+        keeps the entry: those came from builds that did not record one.
+        """
+        cutoff = now_ms() - HISTORY_DAYS * 86400 * 1000
+        kept = []
+        for entry in self.entries:
+            try:
+                stamp = int(entry.get("finishedMs") or entry.get("startedMs") or 0)
+            except (TypeError, ValueError):
+                stamp = 0
+            if stamp and stamp < cutoff:
+                continue
+            kept.append(entry)
+        del kept[HISTORY_MAX:]
+        removed = len(self.entries) - len(kept)
+        self.entries = kept
+        return removed
 
     def save(self) -> None:
         try:
+            self.path().parent.mkdir(parents=True, exist_ok=True)
             self.path().write_text(json.dumps({"entries": self.entries}, indent=2) + "\n")
         except OSError as exc:
             print(f"localsendd: cannot save history: {exc}", file=sys.stderr)
@@ -364,7 +392,7 @@ class History:
 
     def push(self, entry: dict) -> None:
         self.entries.insert(0, entry)
-        del self.entries[HISTORY_MAX:]
+        self._prune()
 
     def clear(self) -> None:
         self.entries = []

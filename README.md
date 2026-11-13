@@ -43,7 +43,7 @@ Then right click the panel or desktop, **Add Widgets**, and pick **LocalSend**. 
 | Open the download folder | folder button in the popup header |
 | Never prompt for your own phone | ★ on its row, then enable auto accept for trusted devices |
 | Force a discovery round | refresh button in the popup header |
-| Review transfers | *History* tab, grouped by day |
+| Review transfers | *History* tab, grouped by day; keeps 90 days and at most 200 transfers |
 | Open a received file | click its row in the History tab |
 | Open the containing folder | right click a row, **Open File Location**, the file is pre-selected in Dolphin |
 | Turn the backend off | master switch in the popup footer; the daemon stops, the widget stays |

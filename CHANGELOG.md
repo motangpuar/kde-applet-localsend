@@ -17,6 +17,7 @@ archive name in the release assets.
 
 - `scripts/package.sh` fails the build when the symbolic icon is missing from the archive.
 - Cancelling a transfer stops the sender within one chunk instead of after the current file.
+- History keeps 90 days of transfers and at most 200 entries, trimmed on read and on write.
 - Temp downloads are swept at startup, so a daemon killed mid transfer leaves no debris.
 
 ### Fixed
