@@ -38,6 +38,7 @@ DEFAULT_PORT = 53317
 PEER_TTL = 60.0
 PROMPT_TIMEOUT = 300.0
 PROGRESS_STEP = 512 * 1024
+PART_SUFFIX = ".localsend.part"
 HISTORY_MAX = 200
 
 PATH_INFO = "/api/localsend/v2/info"
@@ -47,6 +48,9 @@ PATH_UPLOAD = "/api/localsend/v2/upload"
 PATH_CANCEL = "/api/localsend/v2/cancel"
 
 TERMINAL = ("done", "error", "declined", "cancelled", "timed out")
+
+class Cancelled(Exception):
+    """Raised inside a sender thread when the session is cancelled mid transfer."""
 
 
 # --------------------------------------------------------------------------- paths / config
@@ -222,6 +226,26 @@ def mime_for(path: Path) -> str:
 
     return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
+
+def discard_part(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+def sweep_parts(directory: Path) -> int:
+    """Remove temp files a previous daemon died on: they can never become complete."""
+    removed = 0
+    try:
+        for stale in directory.glob("*" + PART_SUFFIX):
+            try:
+                stale.unlink()
+                removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed
 
 def unique_path(directory: Path, name: str) -> Path:
     name = sanitize_file_name(name)
@@ -690,18 +714,19 @@ class SendHandler(BaseHTTPRequestHandler):
                 self._text(400, "Unknown file")
                 return
             file_name = entry["name"]
+            expected = int(entry.get("size") or 0)
         directory = Path(st.cfg["download_dir"])
         directory.mkdir(parents=True, exist_ok=True)
         dest = unique_path(directory, file_name)
-        # Remember where the bytes landed: the widget opens entries from history, and a
-        # transfer may have been renamed by unique_path() to avoid an overwrite.
-        with st.lock:
-            entry["path"] = str(dest)
+        # Bytes land in a sibling temp name and are renamed only once the announced size has
+        # arrived. A dropped connection must never leave a file that looks complete under its
+        # final name, which is what the old write-straight-to-dest path did.
+        part = dest.with_name(dest.name + PART_SUFFIX)
 
         written = 0
         flushed = 0
         try:
-            with open(dest, "wb") as out:
+            with open(part, "wb") as out:
                 while not self._body_done:
                     chunk = self._read_chunk()
                     if not chunk:
@@ -711,14 +736,42 @@ class SendHandler(BaseHTTPRequestHandler):
                     if written - flushed >= PROGRESS_STEP:
                         flushed = written
                         self._mark_file(session, file_id, "receiving", written)
+                    with st.lock:
+                        cancelled = session.status == "cancelled"
+                    if cancelled:
+                        break
         except OSError as exc:
-            try:
-                dest.unlink()
-            except OSError:
-                pass
-            self._mark_file(session, file_id, "error", written, f"write failed: {exc}")
-            self._text(500, f"write: {exc}")
+            discard_part(part)
+            self._mark_file(session, file_id, "error", written, f"receive failed: {exc}")
+            self._text(500, f"receive: {exc}")
             return
+
+        with st.lock:
+            cancelled = session.status == "cancelled"
+        if cancelled:
+            discard_part(part)
+            self._mark_file(session, file_id, "error", written, "cancelled by user")
+            self._text(409, "Cancelled")
+            return
+        if expected > 0 and written != expected:
+            discard_part(part)
+            self._mark_file(
+                session, file_id, "error", written, f"short transfer: {written} of {expected} bytes"
+            )
+            self._text(400, f"incomplete body: {written} of {expected} bytes")
+            return
+        try:
+            os.replace(part, dest)
+        except OSError as exc:
+            discard_part(part)
+            self._mark_file(session, file_id, "error", written, f"cannot finalise: {exc}")
+            self._text(500, f"finalise: {exc}")
+            return
+        with st.lock:
+            # Remember where the bytes landed: the widget opens entries from history, and the
+            # name may have been changed by unique_path() to avoid an overwrite. Recorded only
+            # once the file is complete, so history never points at a partial download.
+            entry["path"] = str(dest)
 
         all_done = self._mark_file(session, file_id, "done", written)
         if all_done:
@@ -741,7 +794,9 @@ class SendHandler(BaseHTTPRequestHandler):
             entry["status"] = status
         if error:
             session.error = error
-            session.status = "error"
+            # A cancel is terminal and must survive the error bookkeeping that follows it.
+            if session.status != "cancelled":
+                session.status = "error"
         session.recompute()
         return all(f["status"] == "done" for f in session.files)
 
@@ -922,11 +977,21 @@ def start_send(state: AppState, peer: dict, paths: list[str], cert: CertPair) ->
     def worker() -> None:
         try:
             _run_send(state, session, peer, items, metas, cert)
-        except Exception as exc:  # noqa: BLE001 - any failure lands in the session
+        except Cancelled:
             with state.lock:
+                session.status = "cancelled"
+                session.error = "cancelled by user"
+                for entry in session.files:
+                    if entry["status"] in ("pending", "sending"):
+                        entry["status"] = "error"
+                session.recompute()
+        except Exception as exc:  # noqa: BLE001 - any failure lands in the session
+            print(f"send {session.id} failed: {exc}", file=sys.stderr)
+            with state.lock:
+                if session.status == "cancelled":
+                    return
                 session.status = "error"
                 session.error = str(exc) or exc.__class__.__name__
-            print(f"send {session.id} failed: {exc}", file=sys.stderr)
 
     threading.Thread(target=worker, name="send", daemon=True).start()
     return session.id
@@ -959,6 +1024,9 @@ def _run_send(state, session, peer, items, metas, cert) -> None:
         session.status = "running"
 
     for path, fid in items:
+        with state.lock:
+            if session.status == "cancelled":
+                raise Cancelled()
         token = tokens.get(fid)
         if not token:
             raise RuntimeError(f"peer returned no token for {path}")
@@ -977,13 +1045,19 @@ def _run_send(state, session, peer, items, metas, cert) -> None:
                     break
                 conn.send(chunk)
                 sent += len(chunk)
-                if sent // PROGRESS_STEP != (sent - len(chunk)) // PROGRESS_STEP:
-                    with state.lock:
+                with state.lock:
+                    cancelled = session.status == "cancelled"
+                    if sent // PROGRESS_STEP != (sent - len(chunk)) // PROGRESS_STEP:
                         entry = next((f for f in session.files if f["id"] == fid), None)
                         if entry is not None:
                             entry["bytes"] = sent
                             entry["status"] = "sending"
                         session.recompute()
+                if cancelled:
+                    # Stop within one chunk instead of pushing the rest of the file to a peer
+                    # that is no longer interested.
+                    conn.close()
+                    raise Cancelled()
         resp = conn.getresponse()
         resp.read()
         code = resp.status
@@ -998,7 +1072,8 @@ def _run_send(state, session, peer, items, metas, cert) -> None:
             session.recompute()
 
     with state.lock:
-        session.status = "done"
+        if session.status != "cancelled":
+            session.status = "done"
         session.recompute()
 
 
@@ -1265,6 +1340,9 @@ def main(argv: list[str]) -> int:
     write_pid()
 
     Path(cfg["download_dir"]).mkdir(parents=True, exist_ok=True)
+    stale = sweep_parts(Path(cfg["download_dir"]))
+    if stale:
+        print(f"localsendd: removed {stale} partial download(s)", file=sys.stderr)
     cert = ensure_cert()
     persist = not overridden
     if cfg.get("fingerprint") != cert.fingerprint:

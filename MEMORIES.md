@@ -3,6 +3,18 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+## Transfer integrity (2026-11-16, branch fix/truncated-receive, issue #7 + #4)
+`upload()` used to write straight to the final unique name and treat EOF as success, so an interrupted
+transfer produced a truncated file marked `done`. Now bytes go to `<name>.localsend.part`, the written
+count is compared with the announced size, and `os.replace` happens on the last byte. Failures unlink
+the part, `sweep_parts()` clears debris at startup, and `entry["path"]` is recorded only after the
+rename. Cancellation now works on both sides: the receive loop and the sender loop check
+`session.status` between chunks, `Cancelled` aborts the worker, and `_mark_file()` refuses to overwrite
+the terminal `cancelled` status. Tests 14 (was 11): truncated body leaves no file, cancel mid receive
+discards the part, cancel mid send stops before the whole file. Note: `HISTORY_MAX = 200` already caps
+history entries, so issue #6 is only about time based retention and load time trimming, not an unbounded
+file.
+
 ## Icon (2026-11-13)
 Replaced the placeholder icon with a designed pair: `contents/icons/io.github.localsend.plasmoid.svg`
 (64-unit grid, 56-unit tile with 6.25% margins, 6-unit stroke so the glyph is still 2.06 px at the

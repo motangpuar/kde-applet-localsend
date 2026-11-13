@@ -16,6 +16,7 @@ import os
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -244,6 +245,139 @@ class ReceiveFlowTests(HermeticDirs):
         self.assertEqual(history[0]["files"][0]["name"], "hello.bin")
         # The widget opens entries from history, so the recorded path must be the real one.
         self.assertEqual(Path(history[0]["files"][0]["path"]), saved_to.resolve())
+        # The temp name is only an implementation detail: nothing may survive under it.
+        self.assertEqual(list(saved_to.parent.glob("*" + mod.PART_SUFFIX)), [])
+
+    def _prepare(self, port: int, cert, files: dict, fingerprint: str = "e" * 64):
+        payload = {
+            "info": {"alias": "phone", "fingerprint": fingerprint, "port": 1234},
+            "files": files,
+        }
+        conn = http.client.HTTPSConnection(
+            "127.0.0.1", port, timeout=20, context=self.client_context(cert)
+        )
+        result: dict = {}
+
+        def do_prepare():
+            body = json.dumps(payload).encode()
+            conn.request(
+                "POST",
+                "/api/localsend/v2/prepare-upload",
+                body=body,
+                headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+            )
+            resp = conn.getresponse()
+            result["status"] = resp.status
+            result["body"] = json.loads(resp.read() or b"{}")
+
+        thread = threading.Thread(target=do_prepare)
+        thread.start()
+        prompt = None
+        deadline = time.time() + 10
+        while time.time() < deadline and prompt is None:
+            prompts = self.ctl("state").get("prompts") or []
+            prompt = prompts[0] if prompts else None
+            time.sleep(0.1)
+        self.assertIsNotNone(prompt, "daemon never asked for confirmation")
+        self.assertEqual(self.ctl("respond", prompt["id"], "accept")["accepted"], True)
+        thread.join(10)
+        self.assertEqual(result["status"], 200)
+        return result["body"]["sessionId"], result["body"]["files"]
+
+    def _upload_socket(self, port: int, cert, session_id: str, file_id: str, token: str, size: int):
+        ctx = self.client_context(cert)
+        raw = ctx.wrap_socket(
+            socket.create_connection(("127.0.0.1", port), timeout=20), server_hostname="127.0.0.1"
+        )
+        target = f"/api/localsend/v2/upload?sessionId={session_id}&fileId={file_id}&token={token}"
+        raw.sendall(
+            (
+                f"POST {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                f"Content-Type: application/octet-stream\r\nContent-Length: {size}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode()
+        )
+        return raw
+
+    def _wait_terminal(self, seconds: float = 15) -> dict:
+        deadline = time.time() + seconds
+        session: dict = {}
+        while time.time() < deadline:
+            sessions = self.ctl("state").get("sessions") or []
+            if sessions:
+                session = sessions[0]
+                if session["status"] in ("done", "error", "cancelled", "declined", "timed out"):
+                    return session
+            time.sleep(0.1)
+        self.fail(f"session never finished: {session}")
+
+    def test_truncated_body_leaves_no_file(self):
+        port = free_port()
+        downloads = self.tmp / "downloads"
+        self.start_daemon(port, "--download-dir", str(downloads))
+        cert = mod.ensure_cert()
+        session_id, tokens = self._prepare(
+            port,
+            cert,
+            {"file-1": {"id": "file-1", "fileName": "cut.bin", "size": 8192}},
+        )
+        raw = self._upload_socket(port, cert, session_id, "file-1", tokens["file-1"], 8192)
+        raw.sendall(b"x" * 1024)
+        # Let the daemon consume those bytes, then end the body cleanly: a FIN after a short body
+        # must be reported as a short transfer, not as a transport error.
+        time.sleep(0.3)
+        raw.shutdown(socket.SHUT_WR)
+
+        session = self._wait_terminal()
+        raw.close()
+        self.assertEqual(session["status"], "error")
+        self.assertIn("short transfer", session["error"] or "")
+        self.assertEqual(session["files"][0]["status"], "error")
+        self.assertEqual(session["files"][0]["bytes"], 1024)
+        self.assertNotIn("path", session["files"][0])
+        self.assertEqual(list(downloads.iterdir()), [], "partial download left behind")
+
+    def test_reset_connection_leaves_no_file(self):
+        port = free_port()
+        downloads = self.tmp / "downloads"
+        self.start_daemon(port, "--download-dir", str(downloads))
+        cert = mod.ensure_cert()
+        session_id, tokens = self._prepare(
+            port,
+            cert,
+            {"file-1": {"id": "file-1", "fileName": "rst.bin", "size": 4096}},
+        )
+        raw = self._upload_socket(port, cert, session_id, "file-1", tokens["file-1"], 4096)
+        raw.sendall(b"z" * 512)
+        time.sleep(0.2)
+        # Reset instead of a clean FIN: the peer vanishes without closing the body politely.
+        raw.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        raw.close()
+
+        session = self._wait_terminal()
+        self.assertEqual(session["status"], "error", session["error"])
+        self.assertEqual(session["files"][0]["status"], "error")
+        self.assertLess(session["files"][0]["bytes"], 4096)
+        self.assertEqual(list(downloads.iterdir()), [], "aborted download left behind")
+
+    def test_cancel_mid_upload_discards_partial(self):
+        port = free_port()
+        downloads = self.tmp / "downloads"
+        self.start_daemon(port, "--download-dir", str(downloads))
+        cert = mod.ensure_cert()
+        session_id, tokens = self._prepare(
+            port,
+            cert,
+            {"file-1": {"id": "file-1", "fileName": "cut.bin", "size": 65536}},
+        )
+        raw = self._upload_socket(port, cert, session_id, "file-1", tokens["file-1"], 65536)
+        raw.sendall(b"y" * 4096)
+        self.assertTrue(self.ctl("cancel", session_id)["ok"])
+        raw.close()
+
+        session = self._wait_terminal()
+        self.assertEqual(session["status"], "cancelled", session["error"])
+        self.assertEqual(list(downloads.iterdir()), [], "cancelled download left behind")
 
     def test_decline_answers_403(self):
         port = free_port()
@@ -460,6 +594,129 @@ class SendFlowTests(unittest.TestCase):
             # History keeps the source path so the widget can open or reveal the sent file.
             state.sync_history()
             self.assertEqual(Path(state.history.entries[0]["files"][0]["path"]), source.resolve())
+            httpd.shutdown()
+        finally:
+            if old is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old
+            shutil.rmtree(cfgdir, ignore_errors=True)
+
+    def test_cancel_stops_sender(self):
+        cfgdir = tempfile.mkdtemp(prefix="lsd-cancel-")
+        old = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = cfgdir
+        try:
+            cert = mod.ensure_cert()
+            received: dict = {"bytes": 0}
+            port = free_port()
+
+            class SlowHandler(BaseHTTPRequestHandler):
+                protocol_version = "HTTP/1.1"
+
+                def log_message(self, *args):
+                    pass
+
+                def do_POST(self):
+                    if self.path.startswith("/api/localsend/v2/prepare-upload"):
+                        length = int(self.headers.get("Content-Length") or 0)
+                        payload = json.loads(self.rfile.read(length))
+                        files = {fid: "tok-" + fid for fid in payload["files"]}
+                        reply = json.dumps({"sessionId": "remote-2", "files": files}).encode()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(reply)))
+                        self.end_headers()
+                        self.wfile.write(reply)
+                        return
+                    if self.path.startswith("/api/localsend/v2/upload"):
+                        length = int(self.headers.get("Content-Length") or 0)
+                        total = 0
+                        # Read slowly so the sender is still streaming when the test cancels.
+                        while total < length:
+                            chunk = self.rfile.read(min(64 * 1024, length - total))
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                            received["bytes"] = total
+                            time.sleep(0.01)
+                        received["complete"] = total == length
+                        try:
+                            reply = b'{"savedTo":"/tmp/x"}'
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(reply)))
+                            self.end_headers()
+                            self.wfile.write(reply)
+                        except OSError:
+                            pass
+                        return
+                    self.send_response(404)
+                    self.end_headers()
+
+            httpd = FakeReceiver(("127.0.0.1", port), SlowHandler)
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(str(cert.cert_path), str(cert.key_path))
+            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+            workdir = Path(cfgdir) / "files"
+            workdir.mkdir()
+            source = workdir / "big.bin"
+            blob = os.urandom(8 * 1024 * 1024)
+            source.write_bytes(blob)
+
+            state = mod.AppState(
+                {
+                    "alias": "sender",
+                    "port": 1,
+                    "download_dir": str(workdir),
+                    "pin": None,
+                    "fingerprint": cert.fingerprint,
+                    "favorites": [],
+                    "auto_accept_favorites": False,
+                },
+                {
+                    "alias": "sender",
+                    "version": mod.APP_VERSION,
+                    "deviceModel": "Linux",
+                    "deviceType": "desktop",
+                    "fingerprint": cert.fingerprint,
+                    "port": 1,
+                    "protocol": "https",
+                    "download": False,
+                },
+            )
+            peer = {
+                "fingerprint": "c" * 64,
+                "alias": "receiver",
+                "ip": "127.0.0.1",
+                "port": port,
+                "protocol": "https",
+            }
+            session_id = mod.start_send(state, peer, [str(source)], cert)
+
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                if state.sessions[session_id].bytes_done > 0:
+                    break
+                time.sleep(0.01)
+            with state.lock:
+                state.sessions[session_id].status = "cancelled"
+
+            # "cancelled" is already terminal, so wait for the worker to act on it rather than
+            # for the status the test itself just wrote.
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                session = state.sessions[session_id]
+                if session.error == "cancelled by user" or session.status in ("done", "error"):
+                    break
+                time.sleep(0.02)
+            session = state.sessions[session_id]
+            self.assertEqual(session.status, "cancelled", session.error)
+            self.assertEqual(session.error, "cancelled by user")
+            self.assertFalse(any(f["status"] == "done" for f in session.files))
+            self.assertLess(received["bytes"], len(blob), "receiver got the whole file anyway")
             httpd.shutdown()
         finally:
             if old is None:
