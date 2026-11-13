@@ -28,8 +28,8 @@ What it does
 
 - Lists the LocalSend devices that announce themselves on the local network, with alias, address and
   operating system.
-- Sends files or a whole folder to a device from the panel popup. The other side confirms in its own
-  app, or accepts automatically once you mark it as a trusted device.
+- Sends files to a device from the panel popup. The other side confirms in its own app, or accepts
+  automatically once you mark it as a trusted device.
 - Receives transfers over HTTPS with the same certificate and PIN rules as the reference
   implementation. Incoming files land in ~/Downloads/LocalSend, or the directory you configure.
 - Keeps a transfer history with direction, peer, size, duration and average rate, grouped by day.
