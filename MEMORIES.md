@@ -3,6 +3,22 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+## Release 0.3.0 (tag v0.3.0, release published)
+
+- `CHANGELOG.md` lost its `Unreleased` heading: the section is now `## 0.3.0 - 2026-11-13`, grouped as
+  Added, Changed, Fixed and led by one paragraph saying what the release is for.
+- `metadata.json` `KPlugin.Version` bumped to `0.3.0`; `package.sh` stamps the archive from the tag, so
+  the release asset is `io.github.localsend.plasmoid-0.3.0.plasmoid` (43196 bytes, 12 files).
+- README install lines and the KDE Store field table name the 0.3.0 archive; the store description now
+  covers notification actions, queue, retry, mDNS and the icon picker.
+- Annotated tag message is a short bullet list, the release body carries the full 0.3.0 section plus
+  install commands. `gh release edit --notes-file` was used because the workflow publishes with the
+  auto generated compare link only.
+- Release workflow green on the first push (`release`, run 43386656301), asset downloads and matches
+  the published `SHA256SUMS` (`ff96245564ae0772c50f3b3352cd3549d82f7bb15db96e135a27bf6f8f05a6be`).
+  The local build of the same tree hashes differently: `zip` stores source mtimes, so archives are not
+  bit reproducible, which `docs/dev.md` already says.
+
 ## Empty General page (merged 196117a)
 
 The General tab came up blank because one bad binding kills the whole page: `IconDialog.iconName` is
