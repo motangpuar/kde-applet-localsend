@@ -3,6 +3,25 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+## Empty General page (merged 196117a)
+
+The General tab came up blank because one bad binding kills the whole page: `IconDialog.iconName` is
+**read-only** in `org.kde.iconthemes`, and the page tried to preselect the current icon with it. Only
+the result can be read, on `accepted`. `Image.implicitWidth/implicitHeight` are read-only as well, so
+the previews now size themselves with `Layout.preferredWidth/Height`.
+
+Verified with a real harness this time, since guessing twice was enough. `qml`/`qmlscene` are
+`QGuiApplication`, and `IconDialog` is a widget dialog (`QWidget::windowTitle()` in the backtrace), so
+it segfaults there. plasmashell links QtWidgets, which is why the page is fine in production. The
+harness is a ten line `QQmlApplicationEngine` in a `QApplication` loading the page through a `Loader`:
+
+- default, theme name and loaded file all render (`nodes=34`, labels `Tray icon:`, `Show notifications:`,
+  the current name, the three buttons)
+- `IconDialog.open()` under that harness reaches `visible: true` without crashing
+- margins are numeric now: `page=720x420 form=18,18,684,384`, one grid unit on each side
+- `Qt.exit(nodes)` is the result channel, `console.log` is unreliable here, `QT_FORCE_STDERR_LOGGING=1`
+  brings errors back
+
 ## Tray icon picker (merged 71f0a12)
 
 The first cut of #1 was wrong: a three value enum (color, monochrome, theme) is not an icon chooser.
