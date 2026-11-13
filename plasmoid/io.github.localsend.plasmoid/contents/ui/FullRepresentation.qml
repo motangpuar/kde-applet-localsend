@@ -47,6 +47,7 @@ Item {
     function statusColor(status) {
         if (status === "done") return Kirigami.Theme.positiveTextColor
         if (status === "error" || status === "declined") return Kirigami.Theme.negativeTextColor
+        if (status === "queued") return Kirigami.Theme.textColor
         return Kirigami.Theme.disabledTextColor
     }
 
@@ -58,6 +59,7 @@ Item {
         case "declined": return i18n("Declined")
         case "cancelled": return i18n("Cancelled")
         case "timed out": return i18n("Timed out")
+        case "queued": return i18n("Queued")
         default: return status ? String(status) : i18n("Unknown")
         }
     }
@@ -318,7 +320,8 @@ Item {
                 Layout.fillWidth: true
                 spacing: 0
                 visible: modelData.status === "running" || modelData.status === "negotiating"
-                         || modelData.status === "waiting" || modelData.status === "error"
+                         || modelData.status === "waiting" || modelData.status === "queued"
+                         || modelData.status === "error"
 
                 RowLayout {
                     Layout.fillWidth: true
@@ -336,6 +339,9 @@ Item {
                             if (modelData.status === "error") {
                                 return direction + " · " + peer + " · " + (modelData.error || i18n("failed"))
                             }
+                            if (modelData.status === "queued") {
+                                return direction + " · " + peer + " · " + i18n("waiting for the current transfer")
+                            }
                             const done = applet.formatBytes(modelData.bytesDone || 0)
                             const total = applet.formatBytes(modelData.bytesTotal || 0)
                             const elapsed = Math.max(0.5, (Date.now() - Number(modelData.startedMs || 0)) / 1000)
@@ -343,6 +349,14 @@ Item {
                             const suffix = rate.length > 0 ? " · " + rate : ""
                             return direction + " · " + peer + " · " + done + " / " + total + suffix
                         }
+                    }
+                    PlasmaComponents3.ToolButton {
+                        icon.name: "view-refresh"
+                        visible: modelData.status === "error" && modelData.direction === "send"
+                        onClicked: applet.retrySession(modelData.id)
+                        PlasmaComponents3.ToolTip.text: i18n("Retry the failed files")
+                        PlasmaComponents3.ToolTip.visible: hovered
+                        PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
                     }
                     PlasmaComponents3.ToolButton {
                         icon.name: "dialog-cancel"

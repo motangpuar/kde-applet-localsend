@@ -293,6 +293,8 @@ class Session:
         self.id = str(uuid.uuid4())
         self.direction = direction
         self.peer = peer
+        self.peer_fingerprint = ""
+        self.peer_target: dict = {}  # address as it was when the transfer started
         self.status = "negotiating"
         self.error: str | None = None
         self.files: list[dict] = []
@@ -398,6 +400,51 @@ class History:
         self.entries = []
 
 
+class SendQueue:
+    """Runs one outgoing transfer at a time and keeps the rest in arrival order.
+
+    Clicking send repeatedly used to open one socket set and one thread per transfer at once,
+    which starved the link and made every transfer slower. A queued session stays visible in the
+    applet and can be cancelled before it starts.
+    """
+
+    def __init__(self, state: "AppState") -> None:
+        self._state = state
+        self._cv = threading.Condition()
+        self._jobs: list[tuple[Session, object]] = []
+        self._worker: threading.Thread | None = None
+
+    def depth(self) -> int:
+        with self._cv:
+            return len(self._jobs)
+
+    def submit(self, session: Session, job) -> None:
+        with self._cv:
+            self._jobs.append((session, job))
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = threading.Thread(target=self._drain, name="send-queue", daemon=True)
+                self._worker.start()
+            else:
+                self._cv.notify()  # a parked worker has to wake up for the new job
+
+    def _drain(self) -> None:
+        while True:
+            with self._cv:
+                while not self._jobs:
+                    self._cv.wait(30)
+                    if not self._jobs:
+                        self._worker = None  # idle: the next submit starts a fresh worker
+                        return
+                session, job = self._jobs.pop(0)
+            with self._state.lock:
+                ready = session.status == "queued"
+                if ready:
+                    session.status = "running"
+            if not ready:
+                continue  # cancelled while it waited
+            job()
+
+
 class AppState:
     def __init__(self, cfg: dict, device: dict):
         self.cfg = cfg
@@ -410,6 +457,7 @@ class AppState:
         self.auto_accept = bool(cfg.get("auto_accept_favorites"))
         self.history = History()
         self.history.backfill_paths(cfg["download_dir"])
+        self.send_queue = SendQueue(self)
         self.last_seen = time.time()
         self.idle_exit = 0
         self.shutdown = threading.Event()
@@ -423,7 +471,10 @@ class AppState:
 
     def quiescent(self) -> bool:
         with self.lock:
-            busy = any(s.status in ("running", "waiting", "negotiating") for s in self.sessions.values())
+            busy = any(
+                s.status in ("running", "waiting", "negotiating", "queued")
+                for s in self.sessions.values()
+            )
             return not busy and not self.prompts
 
     # --- peers -------------------------------------------------------------
@@ -979,6 +1030,9 @@ def start_send(state: AppState, peer: dict, paths: list[str], cert: CertPair) ->
     if not paths:
         raise ValueError("no files given")
     session = Session("send", peer["alias"])
+    session.status = "queued"
+    session.peer_fingerprint = str(peer.get("fingerprint") or "")
+    session.peer_target = dict(peer)
     metas: dict[str, dict] = {}
     items: list[tuple[Path, str]] = []
     for raw in paths:
@@ -1020,8 +1074,14 @@ def start_send(state: AppState, peer: dict, paths: list[str], cert: CertPair) ->
                     return
                 session.status = "error"
                 session.error = str(exc) or exc.__class__.__name__
+                # A failure aborts the queue, so anything untouched is a failure too. Leaving the
+                # files pending hid them from the app and from retry, which looks for errors.
+                for entry in session.files:
+                    if entry["status"] in ("pending", "sending"):
+                        entry["status"] = "error"
+                session.recompute()
 
-    threading.Thread(target=worker, name="send", daemon=True).start()
+    state.send_queue.submit(session, worker)
     return session.id
 
 
@@ -1157,6 +1217,29 @@ def dispatch(state: AppState, req: dict, cert: CertPair) -> dict:
                 return err(f"unknown session '{session_id}'")
             session.status = "cancelled"
         return ok({"sessionId": session_id})
+    if method == "retry":
+        session_id = str(req.get("sessionId") or "")
+        with state.lock:
+            session = state.sessions.get(session_id)
+            if session is None:
+                return err(f"unknown session '{session_id}'")
+            if session.direction != "send":
+                return err("only outgoing transfers can be retried")
+            sources = [f["path"] for f in session.files if f["status"] == "error" and f.get("path")]
+            fingerprint = session.peer_fingerprint
+            target = dict(session.peer_target)
+        if not sources:
+            return err("nothing to retry")
+        # Prefer the live announcement, but fall back to the address the transfer used: a peer that
+        # expired from the table is exactly the case retry has to survive.
+        peer = state.peer(fingerprint) or (target or None)
+        if not peer:
+            return err("the other device is not on the network any more")
+        try:
+            sid = start_send(state, peer, sources, cert)
+        except Exception as exc:  # noqa: BLE001
+            return err(str(exc))
+        return ok({"sessionId": sid})
     if method == "history":
         with state.history._lock:
             return ok({"entries": [dict(e) for e in state.history.entries]})
