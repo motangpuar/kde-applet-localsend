@@ -3,7 +3,27 @@
 Every released plasmoid version is listed here. Numbers follow Semantic Versioning and match the
 archive name in the release assets.
 
-## Unreleased
+## 0.3.0 - 2026-11-13
+
+Reliability release. Devices are still found when the network drops announcements, transfers queue
+instead of competing for the link, a failed transfer can be retried without resending everything, and
+the tray icon is yours to pick.
+
+### Added
+
+- Discovery over mDNS as well: the daemon publishes and browses `_localsend._tcp` and merges the
+  results with the announcements, so devices still appear on networks that drop multicast announces.
+- Outgoing transfers queue up. One runs, the rest wait in order, stay visible in the active list and
+  can be cancelled before they start.
+- A failed transfer can be retried from its row. Only the files that failed are sent again, and the
+  retry survives the peer having expired from the discovery table.
+- Incoming transfers can be accepted or declined straight from the notification. Dismissing the
+  notification answers nothing, the popup and the timeout still decide.
+- The tray icon is configurable: the icon picker from the menu editor offers every installed icon,
+  and an SVG or PNG can be loaded from disk.
+- History keeps 90 days of transfers and at most 200 entries, trimmed on read and on write.
+- Symbolic icon variant for panels that ask for monochrome icons.
+- `scripts/package.sh` fails the build when the symbolic icon is missing from the archive.
 
 ### Changed
 
@@ -11,27 +31,17 @@ archive name in the release assets.
   reads at the 22 px panel size.
 - Gradient stops chosen by measured contrast against the white glyph, 3.6:1 at the light end and 6.4:1
   at the dark end.
-- Symbolic icon variant for panels that ask for monochrome icons.
-
-### Added
-
-- `scripts/package.sh` fails the build when the symbolic icon is missing from the archive.
 - Cancelling a transfer stops the sender within one chunk instead of after the current file.
-- History keeps 90 days of transfers and at most 200 entries, trimmed on read and on write.
-- Discovery also runs over mDNS: the daemon publishes and browses `_localsend._tcp` and merges the
-  results with the announcements, so devices still appear on networks that drop multicast announces.
-- Outgoing transfers queue up: one runs, the rest wait in order and can be cancelled before they start.
-- The tray icon is configurable: the icon picker from the menu editor offers every installed icon,
-  and an SVG or PNG can be loaded from disk.
-- A failed transfer can be retried, sending again only the files that failed.
-- A failed transfer marks every untouched file as failed instead of leaving it pending.
-- Incoming transfers can be accepted or declined straight from the notification.
-- Temp downloads are swept at startup, so a daemon killed mid transfer leaves no debris.
+- The General settings page has proper margins and an icon row with a preview, the current name and a
+  reset button.
 
 ### Fixed
 
 - A dropped connection no longer produces a truncated file under its final name: bytes go to a
   `.localsend.part` sibling and are renamed only after the announced size has arrived.
+- A failed transfer marks every untouched file as failed instead of leaving it pending, where neither
+  the window nor retry could see it.
+- Temp downloads are swept at startup, so a daemon killed mid transfer leaves no debris.
 - A cancelled session can no longer be rewritten to `done` or `error` afterwards.
 - History records the path of a received file only once that file is complete.
 

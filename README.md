@@ -16,8 +16,8 @@ LocalSend apps already on your network.
 From a release archive:
 
 ```bash
-kpackagetool6 --type Plasma/Applet --install io.github.localsend.plasmoid-0.2.0.plasmoid
-kpackagetool6 --type Plasma/Applet --upgrade io.github.localsend.plasmoid-0.2.0.plasmoid   # later versions
+kpackagetool6 --type Plasma/Applet --install io.github.localsend.plasmoid-0.3.0.plasmoid
+kpackagetool6 --type Plasma/Applet --upgrade io.github.localsend.plasmoid-0.3.0.plasmoid   # later versions
 ```
 
 From a clone:
