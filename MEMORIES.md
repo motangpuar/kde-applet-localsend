@@ -107,6 +107,14 @@ Round 9 (2026-11-12): repository is Python-only (daemon `python/localsendd`, CLI
   `LOCALSENDD_GUARD_NAME`.
 - Restart helper: `distrobox-host-exec ./scripts/restart-plasma.sh` → prints `plasmashell up: <pid>`.
 
+## Branch Workflow (user directive, 2026-11-13)
+- Every feature starts on its own branch off `main`, then lands with a merge commit.
+- Use `git merge --no-ff`, or a GitHub PR merged with "Create a merge commit". No fast-forward, no
+  squash, no rebase onto `main`, so each feature leaves a bubble in the log.
+- Delete the branch after it lands. Direct commits to `main` stay for docs and release bookkeeping.
+- Issue tracker conventions: `feat:` titles, `Feature` issue type, `enhancement` label, self-assigned,
+  body = one-line description plus an acceptance list with observable postconditions.
+
 ## Next Steps
 1. Confirm in the UI: send prompt latency, header refresh button, single settings checkbox.
 2. Exercise phone→PC receive and `Send…` again; verify favorites/auto-accept across a daemon restart.
