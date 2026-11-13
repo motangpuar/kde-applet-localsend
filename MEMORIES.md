@@ -3,6 +3,27 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+## Tray icon picker (merged 71f0a12)
+
+The first cut of #1 was wrong: a three value enum (color, monochrome, theme) is not an icon chooser.
+Replaced with what the issue asked for.
+
+- `configGeneral.qml` has one row: preview, current name, **Choose Icon…**, **Load Image…**, reset.
+  Choose Icon opens `org.kde.iconthemes` `IconDialog`, the same KIconDialog the menu editor uses, so
+  the search field, categories and custom location come for free. Load Image is a `QtQuick.Dialogs`
+  `FileDialog` filtered to `*.svg *.svgz *.png`.
+- Config keys changed from `iconStyle` to `iconName` and `iconPath`; `iconPath` wins, both empty means
+  the packaged mark. Stale `iconStyle` values in `appletsrc` are ignored, which is harmless.
+- Theme names go through `Kirigami.Icon`, loaded files through `Image`. `Kirigami.Icon` is a theme
+  lookup that happens to accept the packaged SVG URL; it is the wrong tool for arbitrary user files.
+  `CompactRepresentation` therefore stacks a `Kirigami.Icon` and an `Image` inside one `Item` that
+  carries the dim-when-off opacity and the badge sits outside it, unchanged.
+- Margins: the `Kirigami.FormLayout` filled the page edge to edge. It now has
+  `anchors.margins: Kirigami.Units.gridUnit`.
+- Installed clean and plasmashell restarted (`438551`) with no QML errors for the page; the config page
+  itself only loads when the settings dialog opens, and there is no QML runner on the host
+  (`qml`, `qmlscene`, `plasmoidviewer` all absent), so the picker still needs a human click.
+
 ## mDNS discovery (#3, merged 9cf7b38) and tray icon choice (#1, merged d3f77f6)
 
 **mDNS.** The daemon now publishes and browses `_localsend._tcp.local` on `224.0.0.251:5353` next to
