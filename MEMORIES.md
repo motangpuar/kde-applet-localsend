@@ -3,7 +3,7 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
-## Transfer integrity (2026-11-16, branch fix/truncated-receive, issue #7 + #4)
+## Transfer integrity (2026-11-16, merged 5e47f85, closes #7 + #4)
 `upload()` used to write straight to the final unique name and treat EOF as success, so an interrupted
 transfer produced a truncated file marked `done`. Now bytes go to `<name>.localsend.part`, the written
 count is compared with the announced size, and `os.replace` happens on the last byte. Failures unlink
@@ -13,7 +13,9 @@ rename. Cancellation now works on both sides: the receive loop and the sender lo
 the terminal `cancelled` status. Tests 14 (was 11): truncated body leaves no file, cancel mid receive
 discards the part, cancel mid send stops before the whole file. Note: `HISTORY_MAX = 200` already caps
 history entries, so issue #6 is only about time based retention and load time trimming, not an unbounded
-file.
+file. Live check on the running daemon: a 4096 byte upload cut at 1024 bytes ended as `error` with
+`short transfer: 1024 of 4096 bytes`, no file in `~/Downloads/LocalSend`, no `.part`, history bytes 1024
+and no `path` key.
 
 ## Icon (2026-11-13)
 Replaced the placeholder icon with a designed pair: `contents/icons/io.github.localsend.plasmoid.svg`
