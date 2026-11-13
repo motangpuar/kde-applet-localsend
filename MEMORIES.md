@@ -3,6 +3,40 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+## mDNS discovery (#3, merged 9cf7b38) and tray icon choice (#1, merged d3f77f6)
+
+**mDNS.** The daemon now publishes and browses `_localsend._tcp.local` on `224.0.0.251:5353` next to
+the v2 announce on `224.0.0.167:53317`. The codec is hand written (`dns_encode`, `dns_read_name` with
+`0xC0` pointers, `dns_packet`, `dns_parse`, `mdns_peers`), no avahi binding and no `zeroconf`
+dependency. Records: PTR for the service, SRV with port plus `aurora.local`, TXT with
+`alias,version,protocol,fingerprint,deviceModel,deviceType,download`, one A per interface that is up
+and multicast capable. `local_ipv4s()` reads `SIOCGIFFLAGS`/`SIOCGIFADDR` instead of a route probe,
+because the probe returned the VPN tunnel address (`10.1.0.41`) and responders ignore A records for
+interfaces they cannot multicast on. Browse loop queries every 20 s, answers PTR questions, merges
+results through the same `upsert_peer` (a device seen on both paths is one entry), and `scan` now sets
+`MDNS["force"]` so the refresh button queries instead of only announcing. A refused socket logs
+`mdns disabled` and leaves announcements alone.
+
+`IP_MULTICAST_LOOP` is 1, not 0: without it a co-located responder cannot hear the publish at all,
+which is why the first `avahi-browse` run returned nothing.
+
+Live evidence: `avahi-browse -rt _localsend._tcp` resolved our service with hostname `aurora.local`,
+address `192.168.18.163`, port `53317` and the full TXT set; an `avahi-publish -s mdns-probe ...`
+service showed up in `ctl state` as a peer with the right ip, port and `deviceType`. Two daemons on
+one host still do not see each other reliably: `SO_REUSEPORT` splits multicast between them, so the
+README keeps saying so. The issue's acceptance ("works on a network that drops announcements") needs a
+real AP and is not signable from here.
+
+Tests 27 (was 22): announcement round trip, compressed names, browse adds the peer once and does not
+duplicate it on the next round, unreachable address degrades without a crash, published addresses are
+dotted quads. `LOCALSENDD_MDNS=0` in the test env is required, otherwise a daemon under test sees the
+live one through mDNS (`test_second_instance_refuses` caught exactly that).
+
+**Tray icon (#1).** General config gains a `iconStyle` entry (`colored|symbolic|system`) and a
+ComboBox; `main.qml` exposes one `trayIcon` property (`packaged color mark`, `-symbolic.svg`,
+`network-transmit-receive`) that the tray image uses. Notifications keep the packaged color icon.
+Not visually confirmed assistant side: the user has to flip the combo and look.
+
 ## History retention (#6, merged 51ddc22)
 `History._prune()` is the only place that bounds `history.json`: entries older than `HISTORY_DAYS` (90)
 or beyond `HISTORY_MAX` (200) are dropped, on `load()` and on `push()`. `load()` writes the pruned file
