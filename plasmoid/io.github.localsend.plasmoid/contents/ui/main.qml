@@ -348,6 +348,10 @@ PlasmoidItem {
         runCtl(["respond", q(promptId), accept ? "accept" : "reject"], () => root.refresh(), () => root.refresh())
     }
 
+    function retrySession(sessionId) {
+        runCtl(["retry", q(sessionId)], () => root.refresh(), () => root.refresh())
+    }
+
     function cancelSession(sessionId) {
         runCtl(["cancel", q(sessionId)], () => root.refresh(), () => root.refresh())
     }

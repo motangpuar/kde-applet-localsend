@@ -43,6 +43,8 @@ Then right click the panel or desktop, **Add Widgets**, and pick **LocalSend**. 
 | Open the download folder | folder button in the popup header |
 | Never prompt for your own phone | ★ on its row, then enable auto accept for trusted devices |
 | Force a discovery round | refresh button in the popup header |
+| Send while another transfer runs | it waits in the queue; cancel it from the active list before it starts |
+| Retry a failed transfer | refresh button on the active row, only the files that failed are sent again |
 | Review transfers | *History* tab, grouped by day; keeps 90 days and at most 200 transfers |
 | Open a received file | click its row in the History tab |
 | Open the containing folder | right click a row, **Open File Location**, the file is pre-selected in Dolphin |

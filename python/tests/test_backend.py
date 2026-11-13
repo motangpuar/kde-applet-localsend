@@ -783,5 +783,178 @@ class SendFlowTests(unittest.TestCase):
             shutil.rmtree(cfgdir, ignore_errors=True)
 
 
+class SendQueueTests(unittest.TestCase):
+    """Queueing and retry, driven through AppState with a stand-in receiver."""
+
+    def setUp(self):
+        self.cfgdir = tempfile.mkdtemp(prefix="lsd-queue-")
+        self._old = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = self.cfgdir
+        self.cert = mod.ensure_cert()
+        self.workdir = Path(self.cfgdir) / "files"
+        self.workdir.mkdir()
+        self.port = free_port()
+        self.prepared: list[str] = []
+        self.saved: dict[str, int] = {}
+        self.inflight = 0
+        self.peak = 0
+        self._lock = threading.Lock()
+        self.fail_once: set[str] = set()
+        self.httpd = FakeReceiver(("127.0.0.1", self.port), self._handler())
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(self.cert.cert_path), str(self.cert.key_path))
+        self.httpd.socket = ctx.wrap_socket(self.httpd.socket, server_side=True)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.state = mod.AppState(
+            {
+                "alias": "sender",
+                "port": 1,
+                "download_dir": str(self.workdir),
+                "pin": None,
+                "fingerprint": self.cert.fingerprint,
+                "favorites": [],
+                "auto_accept_favorites": False,
+            },
+            {
+                "alias": "sender",
+                "version": mod.APP_VERSION,
+                "deviceModel": "Linux",
+                "deviceType": "desktop",
+                "fingerprint": self.cert.fingerprint,
+                "port": 1,
+                "protocol": "https",
+                "download": False,
+            },
+        )
+        self.peer = {
+            "fingerprint": "d" * 64,
+            "alias": "receiver",
+            "ip": "127.0.0.1",
+            "port": self.port,
+            "protocol": "https",
+        }
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        if self._old is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = self._old
+        shutil.rmtree(self.cfgdir, ignore_errors=True)
+
+    def _handler(self):
+        test = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def _reply(self, status: int, payload: dict) -> None:
+                reply = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(reply)))
+                self.end_headers()
+                self.wfile.write(reply)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length)
+                if self.path.startswith("/api/localsend/v2/prepare-upload"):
+                    payload = json.loads(body)
+                    names = [f["fileName"] for f in payload["files"].values()]
+                    with test._lock:
+                        test.prepared.extend(names)
+                    self._reply(200, {"sessionId": "remote-q", "files": {
+                        fid: "tok-" + fid for fid in payload["files"]}})
+                    return
+                if self.path.startswith("/api/localsend/v2/upload"):
+                    fid = self.path.split("fileId=")[1].split("&")[0]
+                    with test._lock:
+                        test.inflight += 1
+                        test.peak = max(test.peak, test.inflight)
+                    time.sleep(0.4)  # keep the transfer visible long enough to observe the queue
+                    with test._lock:
+                        test.inflight -= 1
+                        if fid in test.fail_once:
+                            test.fail_once.discard(fid)
+                            self._reply(500, {"error": "nope"})
+                            return
+                        test.saved[fid] = len(body)
+                    self._reply(200, {"savedTo": "/tmp/x"})
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+        return Handler
+
+    def _source(self, name: str, size: int) -> Path:
+        path = self.workdir / name
+        path.write_bytes(os.urandom(size))
+        return path
+
+    def _wait(self, session_id: str, timeout: float = 20.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            session = self.state.sessions[session_id]
+            if session.status in mod.TERMINAL:
+                return session
+            time.sleep(0.02)
+        self.fail(f"session {session_id} stuck in {self.state.sessions[session_id].status}")
+
+    def test_second_transfer_waits_for_the_first(self):
+        first = self._source("a.bin", 512 * 1024)
+        second = self._source("b.bin", 512 * 1024)
+        sid_a = mod.start_send(self.state, self.peer, [str(first)], self.cert)
+        sid_b = mod.start_send(self.state, self.peer, [str(second)], self.cert)
+        self.assertEqual(self.state.sessions[sid_b].status, "queued")
+        self.assertEqual(self._wait(sid_a).status, "done")
+        self.assertEqual(self._wait(sid_b).status, "done")
+        self.assertEqual(self.prepared, ["a.bin", "b.bin"])
+        self.assertEqual(self.peak, 1, "two outgoing transfers ran at the same time")
+        self.assertEqual(self.state.send_queue.depth(), 0)
+
+    def test_cancel_queued_transfer_never_starts(self):
+        first = self._source("a.bin", 512 * 1024)
+        second = self._source("b.bin", 512 * 1024)
+        sid_a = mod.start_send(self.state, self.peer, [str(first)], self.cert)
+        sid_b = mod.start_send(self.state, self.peer, [str(second)], self.cert)
+        self.assertEqual(mod.dispatch(self.state, {"method": "cancel", "sessionId": sid_b}, self.cert)["ok"], True)
+        self.assertEqual(self._wait(sid_a).status, "done")
+        self.assertEqual(self.state.sessions[sid_b].status, "cancelled")
+        self.assertEqual(self.prepared, ["a.bin"])
+
+    def test_retry_requeues_only_failed_files(self):
+        good = self._source("good.bin", 64 * 1024)
+        bad = self._source("bad.bin", 64 * 1024)
+        sid = mod.start_send(self.state, self.peer, [str(good), str(bad)], self.cert)
+        first_bad = self.state.sessions[sid].files[1]["id"]
+        self.fail_once.add(first_bad)
+        session = self._wait(sid)
+        self.assertEqual(session.status, "error")
+        self.assertEqual([f["status"] for f in session.files], ["done", "error"])
+        self.assertEqual(self.state.sessions[sid].peer_fingerprint, self.peer["fingerprint"])
+
+        answer = mod.dispatch(self.state, {"method": "retry", "sessionId": sid}, self.cert)
+        self.assertEqual(answer["ok"], True, answer)
+        retried = answer["sessionId"]
+        self.assertNotEqual(retried, sid)
+        self.assertEqual(len(self.state.sessions[retried].files), 1)
+        self.assertEqual(self._wait(retried).status, "done")
+        self.assertIn("bad.bin", self.prepared)
+        self.assertEqual(len(self.saved), 2)
+
+    def test_retry_refuses_a_transfer_with_nothing_failed(self):
+        source = self._source("ok.bin", 32 * 1024)
+        sid = mod.start_send(self.state, self.peer, [str(source)], self.cert)
+        self.assertEqual(self._wait(sid).status, "done")
+        answer = mod.dispatch(self.state, {"method": "retry", "sessionId": sid}, self.cert)
+        self.assertEqual(answer["ok"], False)
+        self.assertIn("nothing to retry", answer["error"])
+        missing = mod.dispatch(self.state, {"method": "retry", "sessionId": "nope"}, self.cert)
+        self.assertIn("unknown session", missing["error"])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

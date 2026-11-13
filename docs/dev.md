@@ -51,23 +51,25 @@ One line of JSON in, one line of JSON out, `{"ok": true, ...}` or `{"ok": false,
 Socket is `$XDG_RUNTIME_DIR/localsend-applet/control.sock`, mode `0600`, 30 s read timeout.
 
 ```bash
-printf '{"cmd":"peers"}\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/localsend-applet/control.sock
+printf '{"method":"state"}\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/localsend-applet/control.sock
 ```
 
-| Verb | Arguments | Result |
+| `method` | Fields | Result |
 |---|---|---|
 | `state` | none | daemon info, peers, sessions, prompts, history, favorites. Touches the heartbeat |
-| `peers` | none | discovered devices |
 | `scan` | none | announce immediately and prune peers that stopped answering |
-| `send` | `fingerprint`, `files` | starts an outgoing session, returns its id |
-| `respond` | `prompt_id`, `action` (`accept`/`reject`/`cancel`), optional `pin` | answers an incoming offer |
-| `cancel` | `session_id` | aborts a running transfer |
+| `send` | `peer` fingerprint, `paths` array | queues an outgoing session, returns `sessionId` |
+| `retry` | `sessionId` | new queued session with only the files that failed |
+| `respond` | `prompt` id, `accept` boolean | answers an incoming offer |
+| `cancel` | `sessionId` | aborts a running transfer, or drops a queued one |
 | `history`, `clear-history` | none | read or drop the transfer log |
-| `favorite` | `fingerprint`, `on` | trust or untrust a device |
-| `auto-accept` | `on` | skip prompts for trusted devices |
-| `wait-ready` | `timeout_ms` | block until the daemon answers; used by `manage.sh ensure` |
+| `favorite` | `peer` fingerprint, `favorite` boolean | trust or untrust a device |
+| `auto-accept` | `enabled` boolean | skip prompts for trusted devices |
 | `ping` | none | liveness check without touching state |
 | `shutdown` | none | graceful exit |
+
+`wait-ready` is not a daemon verb: `localsendctl` polls `ping` until the socket answers, which is what
+`manage.sh ensure` waits on.
 
 `localsendctl` is a thin client for these. `manage.sh` adds the supervisor verbs:
 `ensure [--idle-exit SECS]`, `stop`, `restart`, `enable`, `disable`, `query-enabled`, `ctl`,
@@ -81,6 +83,13 @@ printf '{"cmd":"peers"}\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/localsend-app
   abstract socket named `\0localsend-applet-<uid>`. A second `ensure` adopts the running daemon
   instead of racing it, which is what used to produce duplicate daemons announcing one fingerprint
   from two ports.
+- **One outgoing transfer at a time.** `SendQueue` runs the head of the list and leaves everything else
+  in `queued`, which the applet shows in the active list and can cancel before it starts. Clicking send
+  on four devices used to open four socket sets and four threads at once and starve the link. The
+  worker parks on a condition variable and is woken by the next submit, so no thread survives idle.
+- **Retry replays only failures.** `retry` builds a new session from the files whose status is `error`
+  and reuses the peer address recorded on the original session, because the peer table entry has
+  normally expired by the time a human notices the failure.
 - **Heartbeat plus idle exit.** Every `state` call touches the heartbeat. `--idle-exit 900` reaps the
   daemon only when it is quiescent: no sessions, no prompts, no recent request. A crashed plasmashell
   therefore cleans up after itself, and an active transfer is never killed.
