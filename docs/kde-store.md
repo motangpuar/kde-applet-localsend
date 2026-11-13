@@ -40,7 +40,7 @@ What it does
 
 How it works
 
-- Backend: one Python 3 process, localsendd, that owns multicast discovery and TCP port 53317. It is
+- Backend: one Python 3 process, localsendd, that owns multicast and mDNS discovery and TCP port 53317. It is
   the only part that speaks the protocol.
 - Control plane: newline delimited JSON over a Unix socket in XDG_RUNTIME_DIR. No D-Bus, no systemd
   unit, no root.
@@ -53,7 +53,7 @@ How it works
 
 Privacy
 
-Discovery is multicast inside the local network and transfers go directly between devices. There is no
+Discovery is multicast and mDNS inside the local network and transfers go directly between devices. There is no
 account, no cloud relay and no telemetry. The TLS certificate and key are generated locally on first
 start.
 

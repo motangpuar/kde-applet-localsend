@@ -18,6 +18,8 @@ archive name in the release assets.
 - `scripts/package.sh` fails the build when the symbolic icon is missing from the archive.
 - Cancelling a transfer stops the sender within one chunk instead of after the current file.
 - History keeps 90 days of transfers and at most 200 entries, trimmed on read and on write.
+- Discovery also runs over mDNS: the daemon publishes and browses `_localsend._tcp` and merges the
+  results with the announcements, so devices still appear on networks that drop multicast announces.
 - Outgoing transfers queue up: one runs, the rest wait in order and can be cancelled before they start.
 - A failed transfer can be retried, sending again only the files that failed.
 - A failed transfer marks every untouched file as failed instead of leaving it pending.

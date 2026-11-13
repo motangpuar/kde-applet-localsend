@@ -984,12 +984,301 @@ def discovery_loop(state: AppState, device: dict) -> None:
     sock.close()
     DISCOVERY.update(sock=None, device=None, state=None)
 
+# --------------------------------------------------------------------------- mdns
+# Multicast announcements are the primary discovery path, but some access points drop them while
+# unicast still works. mDNS rides a different multicast group and port, so it survives those
+# networks. Everything below is written against the wire format directly: no avahi, no zeroconf,
+# and a missing or refused socket simply degrades to the announcement loop.
+MDNS_GROUP = "224.0.0.251"
+MDNS_PORT = 5353
+MDNS_SERVICE = "_localsend._tcp.local"
+MDNS_TTL = 120
+MDNS_QUERY_INTERVAL = 20.0
+MDNS_A = 1
+MDNS_PTR = 12
+MDNS_TXT = 16
+MDNS_SRV = 33
+
+def mdns_port() -> int:
+    try:
+        return int(os.environ.get("LOCALSENDD_MDNS_PORT") or MDNS_PORT)
+    except ValueError:
+        return MDNS_PORT
+
+def mdns_group() -> str:
+    # Tests point the browser at loopback so no real mDNS traffic leaves the machine.
+    return os.environ.get("LOCALSENDD_MDNS_ADDR") or MDNS_GROUP
+
+def dns_encode(name: str) -> bytes:
+    out = bytearray()
+    for label in name.rstrip(".").split("."):
+        if not label:
+            continue
+        raw = label.encode("utf-8")[:63]
+        out.append(len(raw))
+        out += raw
+    out.append(0)
+    return bytes(out)
+
+def dns_read_name(msg: bytes, off: int) -> tuple[str, int]:
+    """Read a possibly compressed name, returning it and the offset after it."""
+    labels: list[str] = []
+    end = off
+    jumped = False
+    while True:
+        if off >= len(msg):
+            raise ValueError("truncated name")
+        length = msg[off]
+        if length == 0:
+            if not jumped:
+                end = off + 1
+            break
+        if length & 0xC0 == 0xC0:
+            if off + 1 >= len(msg):
+                raise ValueError("truncated pointer")
+            if not jumped:
+                end = off + 2
+            off = ((length & 0x3F) << 8) | msg[off + 1]
+            jumped = True
+            continue
+        labels.append(msg[off + 1:off + 1 + length].decode("utf-8", "replace"))
+        off += 1 + length
+    return ".".join(labels), end
+
+def dns_packet(questions: list[tuple[str, int]], answers: list[tuple]) -> bytes:
+    flags = 0x8400 if answers else 0x0000
+    body = bytearray(struct.pack("!HHHHHH", 0, flags, len(questions), len(answers), 0, 0))
+    for name, qtype in questions:
+        body += dns_encode(name) + struct.pack("!HH", qtype, 1)
+    for name, rtype, ttl, rdata in answers:
+        body += dns_encode(name) + struct.pack("!HHIH", rtype, 1, ttl, len(rdata)) + rdata
+    return bytes(body)
+
+def dns_parse(msg: bytes) -> tuple[list[tuple[str, int]], list[dict]]:
+    if len(msg) < 12:
+        raise ValueError("short dns message")
+    qdcount, ancount = struct.unpack("!HH", msg[4:8])
+    off = 12
+    questions: list[tuple[str, int]] = []
+    for _ in range(qdcount):
+        name, off = dns_read_name(msg, off)
+        qtype, _cls = struct.unpack("!HH", msg[off:off + 4])
+        off += 4
+        questions.append((name.lower(), qtype))
+    answers: list[dict] = []
+    for _ in range(ancount):
+        name, off = dns_read_name(msg, off)
+        rtype, _cls, ttl, rdlen = struct.unpack("!HHIH", msg[off:off + 10])
+        off += 10
+        answers.append({"name": name.lower(), "type": rtype, "ttl": ttl,
+                        "off": off, "rdata": msg[off:off + rdlen]})
+        off += rdlen
+    return questions, answers
+
+def mdns_txt(rdata: bytes) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    pos = 0
+    while pos < len(rdata):
+        length = rdata[pos]
+        if not length:
+            break
+        chunk = rdata[pos + 1:pos + 1 + length].decode("utf-8", "replace")
+        key, _, value = chunk.partition("=")
+        fields[key.strip().lower()] = value
+        pos += 1 + length
+    return fields
+
+def mdns_value(msg: bytes, answer: dict):
+    """Decode one resource record into a python value, or None for types we do not use."""
+    kind = answer["type"]
+    if kind == MDNS_A and len(answer["rdata"]) >= 4:
+        return socket.inet_ntoa(answer["rdata"][:4])
+    if kind == MDNS_PTR:
+        return dns_read_name(msg, answer["off"])[0]
+    if kind == MDNS_SRV:
+        port = struct.unpack("!HHH", answer["rdata"][:6])[2]
+        return port, dns_read_name(msg, answer["off"] + 6)[0]
+    if kind == MDNS_TXT:
+        return mdns_txt(answer["rdata"])
+    return None
+
+def local_ipv4s() -> list[str]:
+    """Addresses worth publishing: only interfaces that are up and can carry multicast.
+
+    A route probe would happily return a VPN tunnel address, and mDNS responders on the other side
+    discard A records for interfaces they cannot multicast on, so the interface flags decide.
+    """
+    import fcntl
+
+    addresses: list[str] = []
+    try:
+        names = [name for _index, name in socket.if_nameindex()]
+    except OSError:
+        names = []
+    for name in names:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            flags = struct.unpack("H", fcntl.ioctl(probe.fileno(), 0x8913, struct.pack("256s", name[:15].encode()))[16:18])[0]
+            if not flags & 0x1 or not flags & 0x1000:  # IFF_UP and IFF_MULTICAST
+                continue
+            raw = fcntl.ioctl(probe.fileno(), 0x8915, struct.pack("256s", name[:15].encode()))
+            addresses.append(socket.inet_ntoa(raw[20:24]))
+        except OSError:
+            continue
+        finally:
+            probe.close()
+    kept = [ip for ip in dict.fromkeys(addresses) if not ip.startswith("127.")]
+    return kept or ["127.0.0.1"]
+
+def mdns_hostname() -> str:
+    name = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in socket.gethostname().split(".")[0])
+    return f"{name or 'localsend'}.local"
+
+def mdns_records(device: dict, ips: "str | list[str]") -> list[tuple]:
+    host = mdns_hostname()
+    alias = "".join(ch if ch.isalnum() or ch in "-_ " else "-" for ch in str(device["alias"])) or "localsend"
+    instance = f"{alias.strip()}.{MDNS_SERVICE}"
+    pairs = [
+        f"alias={device['alias']}",
+        f"version={device.get('version') or APP_VERSION}",
+        f"protocol={device.get('protocol') or 'https'}",
+        f"fingerprint={device['fingerprint']}",
+        f"deviceModel={device.get('deviceModel') or 'Linux'}",
+        f"deviceType={device.get('deviceType') or 'desktop'}",
+        f"download={'true' if device.get('download') else 'false'}",
+    ]
+    txt = b"".join(bytes([len(item.encode('utf-8'))]) + item.encode("utf-8") for item in pairs)
+    if isinstance(ips, str):
+        ips = [ips]
+    records = [
+        (MDNS_SERVICE, MDNS_PTR, MDNS_TTL, dns_encode(instance)),
+        (instance, MDNS_SRV, MDNS_TTL, struct.pack("!HHH", 0, 0, int(device["port"])) + dns_encode(host)),
+        (instance, MDNS_TXT, MDNS_TTL, txt),
+    ]
+    records += [(host, MDNS_A, MDNS_TTL, socket.inet_aton(ip)) for ip in ips]
+    return records
+
+def mdns_peers(msg: bytes, answers: list[dict]) -> list[tuple[dict, str]]:
+    """Join PTR, SRV, TXT and A records into peer dictionaries, keyed by instance name."""
+    instances: list[str] = []
+    srv: dict[str, tuple[int, str]] = {}
+    txt: dict[str, dict] = {}
+    address: dict[str, str] = {}
+    for answer in answers:
+        value = mdns_value(msg, answer)
+        if answer["type"] == MDNS_PTR and isinstance(value, str):
+            instances.append(value)
+        elif answer["type"] == MDNS_SRV and value:
+            srv[answer["name"]] = value
+        elif answer["type"] == MDNS_TXT and value:
+            txt[answer["name"]] = value
+        elif answer["type"] == MDNS_A and isinstance(value, str):
+            address[answer["name"]] = value
+    peers: list[tuple[dict, str]] = []
+    for instance in instances:
+        key = instance.lower()
+        target = srv.get(key)
+        fields = txt.get(key) or {}
+        if not target or not fields.get("fingerprint"):
+            continue
+        port, host = target
+        ip = address.get(host.lower())
+        if not ip:
+            continue
+        peers.append((
+            {
+                "fingerprint": fields["fingerprint"],
+                "alias": fields.get("alias") or instance.split(".")[0],
+                "deviceModel": fields.get("devicemodel") or "",
+                "deviceType": fields.get("devicetype") or "",
+                "port": port,
+                "protocol": fields.get("protocol") or "https",
+                "download": fields.get("download") == "true",
+            },
+            ip,
+        ))
+    return peers
+
+def bind_mdns() -> socket.socket:
+    group = mdns_group()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, "SO_REUSEPORT"):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except OSError:
+            pass
+    try:
+        if group == MDNS_GROUP:
+            sock.bind(("", mdns_port()))
+            mreq = struct.pack("4s4s", socket.inet_aton(MDNS_GROUP), socket.inet_aton("0.0.0.0"))
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+            # Loopback stays on so co-located browsers (avahi, a second instance) can resolve us.
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+        else:
+            sock.bind((group, 0))  # test mode: unicast to the loopback responder
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+# Flipped by `scan` so the browse loop sends its query immediately instead of on the next tick.
+MDNS: dict = {"force": False}
+
+def mdns_loop(state: AppState, device: dict) -> None:
+    try:
+        sock = bind_mdns()
+    except OSError as exc:
+        print(f"localsendd: mdns disabled: {exc}", file=sys.stderr)
+        return
+    group = mdns_group()
+    port = mdns_port()
+    sock.settimeout(1.0)
+    last_query = 0.0
+    print(f"localsendd: mdns browsing {MDNS_SERVICE} on {group}:{port}", file=sys.stderr)
+    while not state.shutdown.is_set():
+        now = time.time()
+        if MDNS.pop("force", False):
+            last_query = 0.0
+        if now - last_query >= MDNS_QUERY_INTERVAL:
+            last_query = now
+            records = mdns_records(device, local_ipv4s())
+            for payload in (dns_packet([(MDNS_SERVICE, MDNS_PTR)], []), dns_packet([], records)):
+                try:
+                    sock.sendto(payload, (group, port))
+                except OSError:
+                    pass
+        try:
+            raw, addr = sock.recvfrom(9000)
+        except socket.timeout:
+            continue
+        except OSError:
+            if state.shutdown.is_set():
+                break
+            continue
+        try:
+            questions, answers = dns_parse(raw)
+        except (ValueError, struct.error):
+            continue
+        if any(name == MDNS_SERVICE and qtype in (MDNS_PTR, 255) for name, qtype in questions):
+            reply_to = addr if group != MDNS_GROUP else (group, port)
+            try:
+                sock.sendto(dns_packet([], mdns_records(device, local_ipv4s())), reply_to)
+            except OSError:
+                pass
+        for info, ip in mdns_peers(raw, answers):
+            if info["fingerprint"] != device["fingerprint"]:
+                state.upsert_peer(info, ip)
+    sock.close()
+
 def request_scan(state: AppState) -> dict:
     """Force a discovery round: drop stale peers, then announce immediately.
 
     Peers that do not know us answer with their own announcement, which the
     discovery loop turns into a peer entry.
     """
+    MDNS["force"] = True  # the scan button has to work on networks that drop announcements
     sock = DISCOVERY.get("sock")
     if sock is None:
         state.prune_peers()
@@ -1503,6 +1792,8 @@ def main(argv: list[str]) -> int:
         threading.Thread(
             target=discovery_loop, args=(state, device), name="discovery", daemon=True
         ).start()
+    if os.environ.get("LOCALSENDD_MDNS", "1") != "0":
+        threading.Thread(target=mdns_loop, args=(state, device), name="mdns", daemon=True).start()
 
     print(
         f"localsendd: alias='{device['alias']}' https://0.0.0.0:{port} "

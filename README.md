@@ -42,7 +42,8 @@ Then right click the panel or desktop, **Add Widgets**, and pick **LocalSend**. 
 | Receive files | **Accept** on the notification or in the popup; files land in `~/Downloads/LocalSend` |
 | Open the download folder | folder button in the popup header |
 | Never prompt for your own phone | ★ on its row, then enable auto accept for trusted devices |
-| Force a discovery round | refresh button in the popup header |
+| Force a discovery round | refresh button in the popup header, it announces and queries mDNS |
+| Devices missing from the list | the daemon also browses mDNS, which survives networks that drop announcements |
 | Send while another transfer runs | it waits in the queue; cancel it from the active list before it starts |
 | Retry a failed transfer | refresh button on the active row, only the files that failed are sent again |
 | Review transfers | *History* tab, grouped by day; keeps 90 days and at most 200 transfers |
@@ -105,13 +106,12 @@ Live log in a terminal: `journalctl --user -f | grep localsend`.
 - Two backends on one machine. They cannot discover each other, because the kernel load balances
   multicast between local sockets.
 
-Planned: mDNS discovery for networks that drop multicast, accept and decline straight from the
-notification, text and clipboard messages. See [CHANGELOG.md](CHANGELOG.md) for what shipped.
+Planned: text and clipboard messages. See [CHANGELOG.md](CHANGELOG.md) for what shipped.
 
 ## Privacy
 
-Discovery is multicast inside your local network and transfers go directly from device to device. No
-account, no cloud relay, no telemetry. The TLS certificate is generated on your machine on first start.
+Discovery is multicast and mDNS inside your local network and transfers go directly from device to
+device. No account, no cloud relay, no telemetry. The TLS certificate is generated on your machine on first start.
 
 ## Development
 

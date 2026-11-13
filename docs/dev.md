@@ -132,16 +132,30 @@ Implemented, LocalSend v2.2:
 | `POST /api/localsend/v2/upload?sessionId=&fileId=&token=` | receive file bytes |
 | `POST /api/localsend/v2/prepare-download`, `cancel` | outbound side and session teardown |
 
-Discovery is the documented multicast announce on `224.0.0.167:53317` with the `announce` payload,
-plus a periodic scan round. `scan` is a forced announce, not a query: v2 has no "who is there" call.
+Discovery has two paths that feed the same peer table:
 
-Not implemented: v2.1 text and clipboard messages, reverse direction of some optional endpoints,
-mDNS (`_localsend._tcp`), and the `pin` challenge variants added after 2.2 for some clients.
+- **Multicast announce**, the documented `224.0.0.167:53317` JSON round. `scan` is a forced announce,
+  not a query: v2 has no "who is there" call.
+- **mDNS**, `_localsend._tcp.local` on `224.0.0.251:5353`. Some access points drop the announcement
+  multicast while unicast still works, and this rides a different group on a different port. Records:
+  PTR for the service, SRV carrying the port and host, TXT with `alias`, `version`, `protocol`,
+  `fingerprint`, `deviceModel`, `deviceType` and `download`, and one A per multicast capable
+  interface. The browser queries every 20 s, answers queries addressed to the service, joins PTR,
+  SRV, TXT and A records into peers and merges them through the same `upsert_peer`, so a device seen
+  on both paths stays one entry. The scan button forces a query as well as an announce.
+
+The mDNS codec is written against the wire format (names, compression pointers, the four record
+types) rather than pulling in avahi or zeroconf: the daemon has no dependencies, and a refused or
+occupied socket simply logs `mdns disabled` and leaves the announce loop alone. Loopback of our own
+multicast stays enabled so a co-located responder such as avahi can resolve us.
+
+Not implemented: v2.1 text and clipboard messages, reverse direction of some optional endpoints, and
+the `pin` challenge variants added after 2.2 for some clients.
 
 ## Tests
 
 ```bash
-make test      # 11 unittest cases, about 17 s
+make test      # 27 unittest cases, about 29 s
 make lint      # py_compile
 make verify    # tests plus package layout
 ```
@@ -152,6 +166,8 @@ directories. Test hooks, never set in production:
 - `LOCALSENDD_DISCOVERY=0` disables multicast.
 - `LOCALSENDD_DISCOVERY_PORT=<n>` moves the multicast port.
 - `LOCALSENDD_GUARD_NAME=<name>` renames the abstract socket guard.
+- `LOCALSENDD_MDNS=0` disables mDNS; `LOCALSENDD_MDNS_ADDR` and `LOCALSENDD_MDNS_PORT` point the
+  browser at a stand-in responder on loopback, which is how the browse test stays hermetic.
 
 They exist because the suite shares the network namespace with the live daemon and `SO_REUSEPORT`
 load balances multicast between local sockets.
