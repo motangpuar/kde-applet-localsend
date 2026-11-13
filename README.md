@@ -50,7 +50,8 @@ Then right click the panel or desktop, **Add Widgets**, and pick **LocalSend**. 
 | Open a received file | click its row in the History tab |
 | Open the containing folder | right click a row, **Open File Location**, the file is pre-selected in Dolphin |
 | Turn the backend off | master switch in the popup footer; the daemon stops, the widget stays |
-| Silence notifications | General settings of the widget, the only option there |
+| Change the tray icon | widget settings, General tab: color mark, monochrome, or a theme icon |
+| Silence notifications | widget settings, General tab |
 
 The tray icon shows a badge while transfers run and a spinner while the backend starts.
 

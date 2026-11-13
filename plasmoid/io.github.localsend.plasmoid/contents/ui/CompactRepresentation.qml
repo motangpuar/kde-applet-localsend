@@ -13,7 +13,7 @@ Item {
         height: width
         source: compact.applet.pendingCount > 0
                 ? "mail-unread"
-                : Qt.resolvedUrl("../icons/io.github.localsend.plasmoid.svg")
+                : compact.applet.trayIcon
         visible: !compact.applet.startingUp
         // Off means the daemon is stopped: dim hard so the tray reflects it at a glance.
         opacity: !compact.applet.networkEnabled ? 0.35 : (compact.applet.daemonUp ? 1.0 : 0.55)

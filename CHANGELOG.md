@@ -21,6 +21,7 @@ archive name in the release assets.
 - Discovery also runs over mDNS: the daemon publishes and browses `_localsend._tcp` and merges the
   results with the announcements, so devices still appear on networks that drop multicast announces.
 - Outgoing transfers queue up: one runs, the rest wait in order and can be cancelled before they start.
+- The tray icon can be the color mark, its monochrome twin, or a theme icon.
 - A failed transfer can be retried, sending again only the files that failed.
 - A failed transfer marks every untouched file as failed instead of leaving it pending.
 - Incoming transfers can be accepted or declined straight from the notification.

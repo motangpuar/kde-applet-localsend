@@ -28,6 +28,18 @@ PlasmoidItem {
         return url.indexOf("file://") === 0 ? decodeURIComponent(url.substring(7)) : url
     }
 
+    /// Tray icon: the packaged color mark, its symbolic twin, or a themed icon.
+    readonly property string trayIcon: {
+        switch (Plasmoid.configuration.iconStyle) {
+        case "symbolic":
+            return Qt.resolvedUrl("../icons/io.github.localsend.plasmoid-symbolic.svg").toString()
+        case "system":
+            return "network-transmit-receive"
+        default:
+            return Qt.resolvedUrl("../icons/io.github.localsend.plasmoid.svg").toString()
+        }
+    }
+
     // --- daemon state -------------------------------------------------------
     property bool daemonUp: false
     property bool starting: false
