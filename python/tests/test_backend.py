@@ -60,6 +60,8 @@ class HermeticDirs(unittest.TestCase):
             "XDG_CACHE_HOME": str(self.tmp / "cache"),
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "LOCALSENDD_DISCOVERY": "0",
+            # mDNS would otherwise let the daemons under test see the live one on this machine.
+            "LOCALSENDD_MDNS": "0",
             # The suite shares the network namespace with the real daemon, which holds the
             # production abstract-socket name.
             "LOCALSENDD_GUARD_NAME": f"lsd-py-test-{os.getpid()}-{id(self)}",
@@ -955,6 +957,189 @@ class SendQueueTests(unittest.TestCase):
         self.assertIn("nothing to retry", answer["error"])
         missing = mod.dispatch(self.state, {"method": "retry", "sessionId": "nope"}, self.cert)
         self.assertIn("unknown session", missing["error"])
+
+class MdnsWireTests(unittest.TestCase):
+    """The mDNS encoder and decoder, no sockets involved."""
+
+    def device(self):
+        return {
+            "alias": "aurora box",
+            "version": mod.APP_VERSION,
+            "deviceModel": "Linux",
+            "deviceType": "desktop",
+            "fingerprint": "f" * 64,
+            "port": 53317,
+            "protocol": "https",
+            "download": False,
+        }
+
+    def test_announcement_round_trips_into_a_peer(self):
+        raw = mod.dns_packet([], mod.mdns_records(self.device(), "192.168.1.20"))
+        questions, answers = mod.dns_parse(raw)
+        self.assertEqual(questions, [])
+        self.assertEqual({a["type"] for a in answers}, {1, 12, 16, 33})
+        peers = mod.mdns_peers(raw, answers)
+        self.assertEqual(len(peers), 1)
+        info, ip = peers[0]
+        self.assertEqual(ip, "192.168.1.20")
+        self.assertEqual(info["fingerprint"], "f" * 64)
+        self.assertEqual(info["alias"], "aurora box")
+        self.assertEqual(info["port"], 53317)
+        self.assertEqual(info["protocol"], "https")
+        self.assertEqual(info["deviceType"], "desktop")
+
+    def test_published_addresses_are_usable_ipv4(self):
+        addresses = mod.local_ipv4s()
+        self.assertGreaterEqual(len(addresses), 1)
+        self.assertEqual(len(addresses), len(set(addresses)))
+        for address in addresses:
+            socket.inet_aton(address)  # raises if it is not a dotted quad
+
+    def test_compressed_names_are_followed(self):
+        """Real responders compress; a decoder that only reads literal labels loses the target."""
+        service = mod.MDNS_SERVICE
+        instance = "aurora." + service
+        host = "aurora.local"
+        txt = b"".join(bytes([len(x)]) + x for x in (b"alias=aurora", b"fingerprint=" + b"a" * 64))
+        body = bytearray()
+
+        def put(data: bytes) -> None:
+            body.extend(data)
+
+        def here() -> int:
+            return 12 + len(body)
+
+        def pointer(offset: int) -> bytes:
+            return struct.pack("!H", 0xC000 | offset)
+
+        svc_off = here()
+        put(mod.dns_encode(service))
+        put(struct.pack("!HHIH", 12, 1, 120, len(mod.dns_encode(instance))))
+        inst_off = here()
+        put(mod.dns_encode(instance))
+
+        put(pointer(inst_off))  # SRV owner is a pointer back to the instance name
+        srv_rdata = struct.pack("!HHH", 0, 0, 53317) + mod.dns_encode(host)
+        put(struct.pack("!HHIH", 33, 1, 120, len(srv_rdata)))
+        put(srv_rdata)
+
+        put(pointer(inst_off))
+        put(struct.pack("!HHIH", 16, 1, 120, len(txt)))
+        put(txt)
+
+        put(mod.dns_encode(host))  # A owner stays literal, the parser has to handle both
+        put(struct.pack("!HHIH", 1, 1, 120, 4))
+        put(socket.inet_aton("10.0.0.7"))
+
+        raw = struct.pack("!HHHHHH", 0, 0x8400, 0, 4, 0, 0) + bytes(body)
+        questions, answers = mod.dns_parse(raw)
+        self.assertEqual([a["type"] for a in answers], [12, 33, 16, 1])
+        self.assertEqual(answers[1]["name"], instance)
+        peers = mod.mdns_peers(raw, answers)
+        self.assertEqual(len(peers), 1, answers)
+        info, ip = peers[0]
+        self.assertEqual(ip, "10.0.0.7")
+        self.assertEqual(info["alias"], "aurora")
+        self.assertEqual(info["port"], 53317)
+        self.assertEqual(questions, [])
+
+
+class MdnsBrowseTests(HermeticDirs):
+    """The browser against a stand-in responder that speaks the same wire format."""
+
+    def _state(self):
+        workdir = self.tmp / "files"
+        workdir.mkdir(exist_ok=True)
+        return mod.AppState(
+            {
+                "alias": "browser",
+                "port": 1,
+                "download_dir": str(workdir),
+                "pin": None,
+                "fingerprint": "0" * 64,
+                "favorites": [],
+                "auto_accept_favorites": False,
+            },
+            {
+                "alias": "browser",
+                "version": mod.APP_VERSION,
+                "deviceModel": "Linux",
+                "deviceType": "desktop",
+                "fingerprint": "0" * 64,
+                "port": 1,
+                "protocol": "https",
+                "download": False,
+            },
+        )
+
+    def _responder(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 0))
+        sock.settimeout(5.0)
+        peer = {
+            "alias": "phone",
+            "version": "2.2",
+            "deviceModel": "Pixel",
+            "deviceType": "mobile",
+            "fingerprint": "a" * 64,
+            "port": 53317,
+            "protocol": "https",
+            "download": False,
+        }
+        answer = mod.dns_packet([], mod.mdns_records(peer, "127.0.0.1"))
+        stop = threading.Event()
+
+        def serve():
+            while not stop.is_set():
+                try:
+                    _, addr = sock.recvfrom(9000)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                sock.sendto(answer, addr)
+
+        threading.Thread(target=serve, daemon=True).start()
+        return sock, stop
+
+    def test_browse_adds_the_peer_and_does_not_duplicate_it(self):
+        sock, stop = self._responder()
+        os.environ["LOCALSENDD_MDNS_ADDR"] = "127.0.0.1"
+        os.environ["LOCALSENDD_MDNS_PORT"] = str(sock.getsockname()[1])
+        try:
+            state = self._state()
+            worker = threading.Thread(target=mod.mdns_loop, args=(state, state.device), daemon=True)
+            worker.start()
+            deadline = time.time() + 10
+            while time.time() < deadline and "a" * 64 not in state.peers:
+                time.sleep(0.05)
+            self.assertIn("a" * 64, state.peers)
+            peer = state.peers["a" * 64]
+            self.assertEqual(peer["alias"], "phone")
+            self.assertEqual(peer["ip"], "127.0.0.1")
+            self.assertEqual(peer["port"], 53317)
+            self.assertEqual(peer["deviceType"], "mobile")
+            self.assertEqual(len(state.peers), 1)
+            time.sleep(1.5)  # another query round must merge, not append
+            self.assertEqual(len(state.peers), 1)
+            self.assertEqual(state.upsert_peer(peer, "127.0.0.1"), False)
+            state.shutdown.set()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+        finally:
+            stop.set()
+            sock.close()
+            os.environ.pop("LOCALSENDD_MDNS_ADDR", None)
+            os.environ.pop("LOCALSENDD_MDNS_PORT", None)
+
+    def test_unreachable_address_disables_mdns_without_a_crash(self):
+        os.environ["LOCALSENDD_MDNS_ADDR"] = "203.0.113.9"  # not a local address, bind fails
+        try:
+            state = self._state()
+            mod.mdns_loop(state, state.device)  # returns instead of raising
+            self.assertEqual(state.peers, {})
+        finally:
+            os.environ.pop("LOCALSENDD_MDNS_ADDR", None)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
