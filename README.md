@@ -39,7 +39,7 @@ Then right click the panel or desktop, **Add Widgets**, and pick **LocalSend**. 
 |---|---|
 | See devices on the network | open the popup; the list refreshes on its own and the header shows the count |
 | Send files | **Send…** on a device row, pick one or more files, confirm on the other device |
-| Receive files | accept the prompt in the popup; files land in `~/Downloads/LocalSend` |
+| Receive files | **Accept** on the notification or in the popup; files land in `~/Downloads/LocalSend` |
 | Open the download folder | folder button in the popup header |
 | Never prompt for your own phone | ★ on its row, then enable auto accept for trusted devices |
 | Force a discovery round | refresh button in the popup header |
