@@ -16,6 +16,15 @@ archive name in the release assets.
 ### Added
 
 - `scripts/package.sh` fails the build when the symbolic icon is missing from the archive.
+- Cancelling a transfer stops the sender within one chunk instead of after the current file.
+- Temp downloads are swept at startup, so a daemon killed mid transfer leaves no debris.
+
+### Fixed
+
+- A dropped connection no longer produces a truncated file under its final name: bytes go to a
+  `.localsend.part` sibling and are renamed only after the announced size has arrived.
+- A cancelled session can no longer be rewritten to `done` or `error` afterwards.
+- History records the path of a received file only once that file is complete.
 
 ## 0.2.0 - 2026-11-12
 

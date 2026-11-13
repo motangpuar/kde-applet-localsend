@@ -80,6 +80,9 @@ printf '{"cmd":"peers"}\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/localsend-app
 - **Master switch is a marker file.** `~/.local/share/localsend-applet/disabled` is the source of
   truth; KConfig mirrors it for display only. KConfig dropped the key once and left the backend dead
   with no trace.
+- **Cancellation is checked between chunks.** Both sides poll the session status while bytes move,
+  so a cancel lands within one chunk, never after the current file. A cancelled session keeps its
+  terminal status and its partial download is deleted, not renamed.
 - **Listener first.** The HTTPS listener binds before the control socket answers, so `wait-ready`
   cannot succeed against a half-started daemon.
 - **Process name.** The daemon renames itself through `prctl(PR_SET_NAME)` so `pgrep -x localsendd`
@@ -93,7 +96,7 @@ printf '{"cmd":"peers"}\n' | socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/localsend-app
 | Trust | Fingerprint compare on every peer; no CA and no hostname validation, matching the protocol |
 | Prompts | 5 min timeout, optional PIN, auto-accept only for starred devices |
 | Control socket | `0600` inside `$XDG_RUNTIME_DIR`, single line requests, no shell involved |
-| Downloads | Written to a temp name and renamed, so a partial file never appears under its final name |
+| Downloads | Written to a `.localsend.part` sibling, size checked against the announcement, renamed on the last byte; stale parts are swept at startup |
 | Privileges | Never runs as root, binds no privileged port, the widget starts and stops the daemon |
 
 ## Protocol scope
