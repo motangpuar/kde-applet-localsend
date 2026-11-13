@@ -3,6 +3,15 @@
 Session ledger for the LocalSend Plasma applet. Newest round first; keep entries short and factual.
 
 ## Current Status
+## History retention (#6, merged 51ddc22)
+`History._prune()` is the only place that bounds `history.json`: entries older than `HISTORY_DAYS` (90)
+or beyond `HISTORY_MAX` (200) are dropped, on `load()` and on `push()`. `load()` writes the pruned file
+back so a legacy or hand edited file self heals on the next start; entries without a timestamp survive,
+because builds before 0.2.0 recorded none. `save()` now creates the config dir, otherwise a fresh
+profile silently lost the write. Tests 18 (was 15). Live check on a throwaway daemon: one recent and
+one 120 day old entry in `history.json` came back as `['recent']` with its `path` intact, and the file
+on disk held the same list. Real instance after restart: 29 entries, oldest 2026-11-12, nothing dropped.
+
 ## Transfer integrity (2026-11-16, merged 5e47f85, closes #7 + #4)
 `upload()` used to write straight to the final unique name and treat EOF as success, so an interrupted
 transfer produced a truncated file marked `done`. Now bytes go to `<name>.localsend.part`, the written
