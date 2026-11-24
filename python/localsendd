@@ -1327,7 +1327,7 @@ def start_send(state: AppState, peer: dict, paths: list[str], cert: CertPair) ->
     for raw in paths:
         path = Path(raw).expanduser()
         if not path.is_file():
-            raise ValueError(f"not a regular file: {path}")
+            raise ValueError(f"not a regular file: {raw} -> {path}")
         fid = str(uuid.uuid4())
         size = path.stat().st_size
         metas[fid] = {

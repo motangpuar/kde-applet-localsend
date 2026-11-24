@@ -360,7 +360,7 @@ Item {
                     }
                     PlasmaComponents3.ToolButton {
                         icon.name: "dialog-cancel"
-                        visible: modelData.status !== "error"
+                        visible: modelData.status === "error" && modelData.direction === "send"
                         onClicked: applet.cancelSession(modelData.id)
                         PlasmaComponents3.ToolTip.text: i18n("Cancel transfer")
                         PlasmaComponents3.ToolTip.visible: hovered

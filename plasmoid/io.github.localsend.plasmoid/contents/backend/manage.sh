@@ -49,7 +49,16 @@ while [ $# -gt 0 ]; do
         ensure|stop|restart|query-enabled) ACTION=$1; [ "$1" = restart ] && { ACTION=ensure; RESTART=1; }; shift ;;
         enable)  ACTION=ensure; WANT_ENABLE=1; shift ;;
         disable) ACTION=stop;   WANT_DISABLE=1; shift ;;
-        ctl) ACTION=ctl; shift; CTL_ARGS="$*"; break ;;
+        ctl)
+            ACTION=ctl
+            shift
+            CTL_ARGS=""
+            for _arg in "$@"; do
+                _esc=$(printf '%s' "$_arg" | sed "s/'/'\\\\''/g")
+                CTL_ARGS="$CTL_ARGS '$_esc'"
+            done
+            break
+            ;;
         open|reveal) ACTION=$1; shift; break ;;
         --idle-exit) IDLE=${2:?--idle-exit needs a value}; shift 2 ;;
         *) printf 'manage: unknown argument %s\n' "$1" >&2; exit 64 ;;
@@ -193,10 +202,10 @@ case "$ACTION" in
             printf 'manage: ctl needs arguments, e.g. "manage.sh ctl state"\n' >&2
             exit 64
         fi
-        # shellcheck disable=SC2086
         exec 9>&-
-        exec "$CTL" $CTL_ARGS
+        eval "exec \"\$CTL\" $CTL_ARGS"
         ;;
+
     ensure)
         if [ -e "$SWITCH" ]; then
             printf 'LOCALSEND_DISABLED\n'

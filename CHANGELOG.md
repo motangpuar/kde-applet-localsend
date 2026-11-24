@@ -3,6 +3,12 @@
 Every released plasmoid version is listed here. Numbers follow Semantic Versioning and match the
 archive name in the release assets.
 
+## 0.3.1 - 2026-11-24
+
+### Fixed
+
+- Fix filenames with spaces
+
 ## 0.3.0 - 2026-11-13
 
 Reliability release. Devices are still found when the network drops announcements, transfers queue

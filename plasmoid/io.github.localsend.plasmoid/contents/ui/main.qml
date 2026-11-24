@@ -147,7 +147,11 @@ PlasmoidItem {
 
     // The plasma5support executable engine runs through /bin/sh -c, so quote, don't escape.
     function q(value) {
-        return "\"" + String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"") + "\""
+        return "\"" + String(value)
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, "\\\"")
+            .replace(/\$/g, "\\$")
+            .replace(/`/g, "\\`") + "\""
     }
 
     function runCtl(args, onDone, onFail) {
